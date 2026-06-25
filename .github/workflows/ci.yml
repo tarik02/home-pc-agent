@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $files = gofmt -l (Get-ChildItem -Recurse -Filter *.go | ForEach-Object FullName)
+          if ($files) {
+            $files
+            throw "gofmt required"
+          }
+
+      - name: Test
+        run: go test ./...
+
+      - name: Validate example config
+        run: go run ./cmd/home-pc-agent config validate --config ./configs/home-pc-agent.example.toml
+
+      - name: Build
+        run: go build ./cmd/home-pc-agent
+
+      - name: Check GoReleaser config
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,8 @@
+/bin/
+/dist/
+/logs/
+/*.exe
+
+# Local machine configuration. Keep publishable defaults in configs/*.example.toml.
+/configs/tarik02.toml
+/configs/*.local.toml

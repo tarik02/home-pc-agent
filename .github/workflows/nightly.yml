@@ -1,0 +1,54 @@
+name: nightly
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    name: nightly release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        !startsWith(github.event.head_commit.message, 'chore: release') &&
+        !startsWith(github.event.head_commit.message, 'chore(master): release')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Create nightly tag
+        id: nightly
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::12}"
+          tag="v0.0.0-nightly.${GITHUB_RUN_NUMBER}.${short_sha}"
+          git tag "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Publish nightly release
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
