@@ -13,8 +13,18 @@ permissions:
 
 jobs:
   test:
-    name: test
-    runs-on: windows-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            example_config: configs/home-pc-agent.linux.example.toml
+            binary_ext: ""
+          - os: windows-latest
+            example_config: configs/home-pc-agent.windows.example.toml
+            binary_ext: .exe
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,24 +36,26 @@ jobs:
           cache: true
 
       - name: Check formatting
-        shell: pwsh
+        shell: bash
         run: |
-          $files = gofmt -l (Get-ChildItem -Recurse -Filter *.go | ForEach-Object FullName)
-          if ($files) {
-            $files
-            throw "gofmt required"
-          }
+          files="$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))"
+          if [ -n "$files" ]; then
+            echo "$files"
+            exit 1
+          fi
 
       - name: Test
         run: go test ./...
 
       - name: Validate example config
-        run: go run ./cmd/home-pc-agent config validate --config ./configs/home-pc-agent.example.toml
+        run: go run ./cmd/home-pc-agent config validate --config ./${{ matrix.example_config }}
 
       - name: Build
-        run: go build ./cmd/home-pc-agent
+        shell: bash
+        run: go build -o "${{ runner.temp }}/home-pc-agent${{ matrix.binary_ext }}" ./cmd/home-pc-agent
 
       - name: Check GoReleaser config
+        if: matrix.os == 'windows-latest'
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser

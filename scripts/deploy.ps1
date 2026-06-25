@@ -27,7 +27,7 @@ if (-not $ConfigSource)
     $ConfigCandidates = @(
         (Join-Path $RepoRoot 'configs\home-pc-agent.local.toml'),
         (Join-Path $env:APPDATA 'home-pc-agent\home-pc-agent.toml'),
-        (Join-Path $RepoRoot 'configs\home-pc-agent.example.toml')
+        (Join-Path $RepoRoot 'configs\home-pc-agent.windows.example.toml')
     )
     $ConfigSource = $ConfigCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 }

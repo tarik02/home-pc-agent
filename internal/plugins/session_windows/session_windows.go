@@ -1,4 +1,6 @@
-package session
+//go:build windows
+
+package session_windows
 
 import (
 	"context"
@@ -11,7 +13,7 @@ import (
 	win "github.com/tarik02/home-pc-agent/internal/windows"
 )
 
-const pluginID = "session"
+const pluginID = "session_windows"
 
 type Factory struct{}
 
@@ -50,7 +52,6 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	buttons := []entity.Entity{
 		{ID: "session.lock", Name: "Lock PC", Kind: entity.KindButton, Icon: "mdi:lock"},
 		{ID: "session.sleep", Name: "Sleep PC", Kind: entity.KindButton, Icon: "mdi:power-sleep"},
-		{ID: "session.display_off", Name: "Display Off", Kind: entity.KindButton, Icon: "mdi:monitor-off"},
 	}
 	for _, button := range buttons {
 		if _, err := host.RegisterEntity(button); err != nil {
@@ -77,8 +78,6 @@ func (p *Plugin) handleButton(ctx context.Context, id string) error {
 		return win.LockWorkStation()
 	case "session.sleep":
 		return win.Sleep()
-	case "session.display_off":
-		return win.DisplayOff()
 	default:
 		return fmt.Errorf("unknown session button %q", id)
 	}

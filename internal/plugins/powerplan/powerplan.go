@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	pluginID = "powerplan"
+	pluginID = "powerplan_windows"
 	entityID = "powerplan.mode"
 )
 
 var modeKeyUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
+var modeKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 type Factory struct{}
 
@@ -64,6 +65,9 @@ func (c Config) Validate() error {
 		c.Timeout = 10 * time.Second
 	}
 	for key, mode := range c.Modes {
+		if !modeKeyPattern.MatchString(key) {
+			return fmt.Errorf("modes.%s: mode key must match %s", key, modeKeyPattern.String())
+		}
 		if err := validation.ValidateStruct(&mode,
 			validation.Field(&mode.Name, validation.Required),
 			validation.Field(&mode.GUID, validation.Required),

@@ -2,6 +2,7 @@
 /dist/
 /logs/
 /*.exe
+/home-pc-agent
 
 # Local machine configuration. Keep publishable defaults in configs/*.example.toml.
 /configs/tarik02.toml
