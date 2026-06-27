@@ -1,6 +1,6 @@
 # home-pc-agent
 
-`home-pc-agent` is a Windows-first Home Assistant PC control agent. It exposes selected local PC controls through MQTT while keeping plugins, core state, and transports decoupled.
+`home-pc-agent` is a Home Assistant PC control agent for Windows and Linux desktop workstations. It exposes selected local PC controls through MQTT while keeping plugins, core state, and transports decoupled.
 
 ## Architecture
 
@@ -21,52 +21,34 @@ All plugins are builtin Go code. There is no dynamic DLL, executable, or plugin 
 
 `home-pc-agent` does not execute arbitrary shell commands from MQTT. Commands are only accepted for registered entity IDs, and plugins handle typed allowlisted operations. Where an external executable is needed, the code uses `exec.CommandContext` with an explicit executable and argument list.
 
-FanControl profile switching uses FanControl's own named-pipe IPC when it is available:
+Config validation rejects unknown plugins, unsupported enabled plugins on the current OS, and conflicting providers for the same entity.
 
-1. read `FanControlRPC.ListAvailableConfigs` on `\\.\pipe\FanControl` to discover available configs;
-2. call `FanControlRPC.LoadConfig` with the selected config filename;
-3. keep `FanControl.exe` running during normal switches.
+## Quick Start
 
-Manual `[plugins.fancontrol.profiles.*]` entries are optional overrides. They can rename discovered configs. If the IPC pipe is unavailable, the plugin tries to start `FanControl.exe` from the configured or default path and waits for IPC. It does not overwrite FanControl config files.
+Pick the example config for your platform:
 
-Config reload and plugin unload are supported by the core cleanup model: plugin goroutines are cancelled, command handlers are unsubscribed, entities are unregistered, and transports receive entity removal events so retained discovery configs can be cleared.
-
-## Configuration
-
-Configuration is TOML. Start from:
-
-```powershell
-configs\home-pc-agent.example.toml
-```
+- Linux: `configs/home-pc-agent.linux.example.toml`
+- Windows: `configs/home-pc-agent.windows.example.toml`
 
 Validate it:
 
-```powershell
-go run ./cmd/home-pc-agent config validate --config ./configs/home-pc-agent.example.toml
+```bash
+go run ./cmd/home-pc-agent config validate --config ./configs/home-pc-agent.linux.example.toml
 ```
 
 List builtin plugins and configured status:
 
-```powershell
-go run ./cmd/home-pc-agent plugins list --config ./configs/home-pc-agent.example.toml
+```bash
+go run ./cmd/home-pc-agent plugins list --config ./configs/home-pc-agent.linux.example.toml
 ```
 
 Run the agent:
 
-```powershell
-go run ./cmd/home-pc-agent run --config ./configs/home-pc-agent.example.toml
+```bash
+go run ./cmd/home-pc-agent run --config ./configs/home-pc-agent.linux.example.toml
 ```
 
-The example keeps MQTT and FanControl disabled so validation works on a fresh machine. Enable MQTT after setting `broker`, `client_id`, and `topic_prefix`. FanControl defaults to `C:\Program Files (x86)\FanControl\FanControl.exe` and `C:\Program Files (x86)\FanControl\Configurations\userConfig.json`; override `exe_path` or `config_path` only if your install is elsewhere.
-
-Power plans are discovered from Windows automatically:
-
-```toml
-[plugins.powerplan]
-enabled = true
-```
-
-Manual `[plugins.powerplan.modes.*]` entries are optional overrides. They can rename or pin specific GUIDs, and discovered OS schemes are merged by GUID.
+The examples keep MQTT disabled so validation works on a fresh machine. Enable MQTT after setting `broker`, `client_id`, and `topic_prefix`.
 
 ## MQTT
 
@@ -84,24 +66,33 @@ Default topic layout:
 
 ## Builtin Plugins
 
-- `powerplan`: exposes `select` entity `powerplan.mode`, discovers Windows schemes with the native Power API when enabled, and applies modes with `powercfg.exe /S <guid>`.
-- `fancontrol`: exposes `select` entity `fancontrol.profile`, discovers FanControl configs through IPC when enabled, and switches them through IPC.
-- `session`: exposes `button` entities `session.lock`, `session.sleep`, and `session.display_off`.
+Provider plugins use the `<capability>_<provider>` ID format. Enable one provider per entity on each host.
 
-LibreHardwareMonitor telemetry, WebSocket transport, MCP transport, external plugins, and arbitrary command execution are out of scope for v1.
+| Plugin | Platform | Entity |
+| --- | --- | --- |
+| `session_windows` | Windows | `session.lock`, `session.sleep` |
+| `session_loginctl` | Linux | `session.lock`, `session.sleep` |
+| `display_windows` | Windows | `display.off` |
+| `display_kscreen` | Linux | `display.off` |
+| `powerplan_windows` | Windows | `powerplan.mode` |
+| `powerprofile_powerprofilesctl` | Linux | `powerprofile.profile` |
+| `fancontrol_windows` | Windows | `fancontrol.profile` |
+| `runner` | cross-platform | configured actions |
 
-## Windows Service
+See [docs/plugins/](docs/plugins/) for per-plugin configuration and behavior.
 
-The service command group is scaffolded and wired to Windows Service Manager APIs:
+## Service Management
 
-```powershell
-home-pc-agent service install --config C:\ProgramData\home-pc-agent\home-pc-agent.toml
+Install and manage the agent as a service on your platform:
+
+```bash
+home-pc-agent service install --config /etc/home-pc-agent/home-pc-agent.toml
 home-pc-agent service start
 home-pc-agent service stop
 home-pc-agent service uninstall
 ```
 
-Service management usually requires an elevated shell.
+On Windows this uses the Windows Service Manager. On Linux it writes a user systemd unit under `~/.config/systemd/user/`.
 
 ## Release Flow
 

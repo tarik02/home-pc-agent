@@ -16,6 +16,8 @@ import (
 
 type TransportBuilder func(cfg *config.Config, logger *zap.Logger) []coretransport.Transport
 
+type ConfigValidator func(cfg *config.Config) error
+
 type Runtime struct {
 	cfgPath         string
 	cfg             *config.Config
@@ -27,12 +29,16 @@ type Runtime struct {
 	logger          *zap.Logger
 	factories       []plugin.PluginFactory
 	buildTransports TransportBuilder
+	validateConfig  ConfigValidator
 	configWatcher   *config.Watcher
 
 	mu sync.Mutex
 }
 
-func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factories []plugin.PluginFactory, buildTransports TransportBuilder, transports []coretransport.Transport) *Runtime {
+func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factories []plugin.PluginFactory, buildTransports TransportBuilder, transports []coretransport.Transport, validateConfig ConfigValidator) (*Runtime, error) {
+	if validateConfig == nil {
+		return nil, fmt.Errorf("validateConfig is required")
+	}
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -53,7 +59,8 @@ func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factorie
 		logger:          logger,
 		factories:       factories,
 		buildTransports: buildTransports,
-	}
+		validateConfig:  validateConfig,
+	}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -96,7 +103,7 @@ func (r *Runtime) reloadFromDisk(ctx context.Context) {
 		r.logger.Warn("config reload skipped: failed to read config", zap.String("path", r.cfgPath), zap.Error(err))
 		return
 	}
-	if err := cfg.Validate(); err != nil {
+	if err := r.validateConfig(cfg); err != nil {
 		r.logger.Warn("config reload skipped: validation failed", zap.String("path", r.cfgPath), zap.Error(err))
 		return
 	}

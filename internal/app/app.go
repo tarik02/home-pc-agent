@@ -15,12 +15,9 @@ import (
 
 	"github.com/tarik02/home-pc-agent/internal/config"
 	"github.com/tarik02/home-pc-agent/internal/core"
-	"github.com/tarik02/home-pc-agent/internal/core/plugin"
 	coretransport "github.com/tarik02/home-pc-agent/internal/core/transport"
-	"github.com/tarik02/home-pc-agent/internal/plugins/fancontrol"
-	"github.com/tarik02/home-pc-agent/internal/plugins/powerplan"
-	"github.com/tarik02/home-pc-agent/internal/plugins/runner"
-	"github.com/tarik02/home-pc-agent/internal/plugins/session"
+	"github.com/tarik02/home-pc-agent/internal/plugins/catalog"
+	"github.com/tarik02/home-pc-agent/internal/service"
 	mqtttransport "github.com/tarik02/home-pc-agent/internal/transport/mqtt"
 	win "github.com/tarik02/home-pc-agent/internal/windows"
 )
@@ -52,7 +49,7 @@ func NewRootCommand() *cobra.Command {
 
 	root := &cobra.Command{
 		Use:   "home-pc-agent",
-		Short: "Windows-first Home Assistant PC control agent",
+		Short: "Home Assistant PC control agent",
 	}
 	root.PersistentFlags().StringVar(&configPath, "config", "", "path to TOML config file")
 
@@ -95,10 +92,10 @@ func NewRootCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			factories := builtinFactories()
+			factories := catalog.Factories()
 			sort.Slice(factories, func(i, j int) bool { return factories[i].ID() < factories[j].ID() })
 			for _, factory := range factories {
-				fmt.Fprintf(cmd.OutOrStdout(), "%-12s builtin enabled=%t\n", factory.ID(), cfg.PluginEnabled(factory.ID()))
+				fmt.Fprintf(cmd.OutOrStdout(), "%-32s builtin enabled=%t\n", factory.ID(), cfg.PluginEnabled(factory.ID()))
 			}
 			return nil
 		},
@@ -109,6 +106,16 @@ func NewRootCommand() *cobra.Command {
 	return root
 }
 
+func validateLoadedConfig(cfg *config.Config) error {
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+	if err := catalog.Validate(cfg); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+	return nil
+}
+
 func loadAndValidate(path string) (*config.Config, error) {
 	if path == "" {
 		return nil, fmt.Errorf("--config is required")
@@ -117,8 +124,8 @@ func loadAndValidate(path string) (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
+	if err := validateLoadedConfig(cfg); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }
@@ -141,7 +148,10 @@ func runAgent(ctx context.Context, configPath string) error {
 	buildTransports := func(cfg *config.Config, logger *zap.Logger) []coretransport.Transport {
 		return enabledTransports(cfg, logger)
 	}
-	runtime := core.NewRuntime(absConfig, cfg, logger, builtinFactories(), buildTransports, buildTransports(cfg, logger))
+	runtime, err := core.NewRuntime(absConfig, cfg, logger, catalog.Factories(), buildTransports, buildTransports(cfg, logger), validateLoadedConfig)
+	if err != nil {
+		return err
+	}
 	logger.Info("home-pc-agent runtime starting", zap.String("agent_id", cfg.Agent.ID), zap.String("config", absConfig))
 	return runtime.Run(ctx)
 }
@@ -162,15 +172,6 @@ func configFlagFromArgs(args []string) (string, error) {
 	return "", fmt.Errorf("--config is required")
 }
 
-func builtinFactories() []plugin.PluginFactory {
-	return []plugin.PluginFactory{
-		powerplan.NewFactory(),
-		fancontrol.NewFactory(),
-		runner.NewFactory(),
-		session.NewFactory(),
-	}
-}
-
 func enabledTransports(cfg *config.Config, logger *zap.Logger) []coretransport.Transport {
 	transports := []coretransport.Transport{}
 	if cfg.Transports.MQTT.Enabled {
@@ -185,14 +186,14 @@ func serviceCommand(configPath *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Manage the Windows service",
+		Short: "Manage the agent service",
 	}
-	cmd.PersistentFlags().StringVar(&serviceName, "name", defaultServiceName, "Windows service name")
-	cmd.PersistentFlags().StringVar(&displayName, "display-name", defaultServiceDisplayName, "Windows service display name")
+	cmd.PersistentFlags().StringVar(&serviceName, "name", defaultServiceName, "service name")
+	cmd.PersistentFlags().StringVar(&displayName, "display-name", defaultServiceDisplayName, "service display name")
 
 	install := &cobra.Command{
 		Use:   "install",
-		Short: "Install the Windows service",
+		Short: "Install the agent service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if *configPath == "" {
 				return fmt.Errorf("--config is required for service install")
@@ -205,28 +206,28 @@ func serviceCommand(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return win.InstallService(serviceName, displayName, exePath, []string{"run", "--config", absConfig})
+			return service.Install(serviceName, displayName, exePath, []string{"run", "--config", absConfig})
 		},
 	}
 	uninstall := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Uninstall the Windows service",
+		Short: "Uninstall the agent service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return win.UninstallService(serviceName)
+			return service.Uninstall(serviceName)
 		},
 	}
 	start := &cobra.Command{
 		Use:   "start",
-		Short: "Start the Windows service",
+		Short: "Start the agent service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return win.StartService(serviceName)
+			return service.Start(serviceName)
 		},
 	}
 	stop := &cobra.Command{
 		Use:   "stop",
-		Short: "Stop the Windows service",
+		Short: "Stop the agent service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return win.StopService(serviceName)
+			return service.Stop(serviceName)
 		},
 	}
 	cmd.AddCommand(install, uninstall, start, stop)

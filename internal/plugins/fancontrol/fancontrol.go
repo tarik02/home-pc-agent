@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	pluginID                    = "fancontrol"
+	pluginID                    = "fancontrol_windows"
 	entityID                    = "fancontrol.profile"
 	defaultFanControlExePath    = `C:\Program Files (x86)\FanControl\FanControl.exe`
 	defaultFanControlConfigPath = `C:\Program Files (x86)\FanControl\Configurations\userConfig.json`

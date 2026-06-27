@@ -29,6 +29,8 @@ const (
 	interpreterPowerShell  = "powershell"
 	interpreterCmd         = "cmd"
 	interpreterExe         = "exe"
+	interpreterSh          = "sh"
+	interpreterBash        = "bash"
 	interpreterPowerShellE = "powershell.exe"
 
 	stateNone        = "none"
@@ -441,6 +443,8 @@ func validateCommandOrInterpreter(prefix, command, interpreter string) error {
 		interpreterPowerShellE,
 		interpreterCmd,
 		interpreterExe,
+		interpreterSh,
+		interpreterBash,
 	)); err != nil {
 		return fmt.Errorf("%s.interpreter: %w", prefix, err)
 	}

@@ -1,0 +1,53 @@
+[agent]
+id = "desktop-pc"
+name = "Desktop PC"
+data_dir = 'C:\ProgramData\home-pc-agent'
+
+[transports.mqtt]
+enabled = false
+broker = "tcp://homeassistant.local:1883"
+client_id = "home-pc-agent-desktop"
+topic_prefix = "pc/desktop"
+discovery_base = "homeassistant"
+connect_timeout = "5s"
+
+[plugins.session_windows]
+enabled = true
+
+[plugins.display_windows]
+enabled = true
+
+[plugins.powerplan_windows]
+enabled = true
+timeout = "10s"
+
+[plugins.fancontrol_windows]
+enabled = false
+timeout = "20s"
+
+# Allowlisted script execution. Disabled by default; enable after defining actions.
+# [plugins.runner]
+# enabled = true
+# default_timeout = "120s"
+#
+# [plugins.runner.actions.display_mode]
+# name = "Display Mode"
+# kind = "select"
+# icon = "mdi:monitor"
+#
+# [plugins.runner.actions.display_mode.state]
+# source = "none"
+#
+# [plugins.runner.actions.display_mode.setter]
+# path = "C:\\ProgramData\\home-pc-agent\\scripts\\modeswitch.ps1"
+# interpreter = "pwsh"
+# input = "structured"
+# delivery = "args"
+#
+# [plugins.runner.actions.display_mode.options.default]
+# name = "Default"
+# parameters = { Mode = "default" }
+#
+# [plugins.runner.actions.display_mode.options.gaming_chair]
+# name = "Gaming Chair"
+# parameters = { Mode = "gaming-chair" }

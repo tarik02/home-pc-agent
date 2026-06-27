@@ -113,6 +113,18 @@ func buildInvocation(spec CommandSpec) (string, []string, *strings.Reader, []str
 		args = append(args, deliveryArgsFlat(spec.Delivery, spec.Params)...)
 		stdin, env, err := deliveryExtras(spec.Delivery, spec.Params)
 		return "cmd", args, stdin, env, err
+	case interpreterSh:
+		args := []string{spec.Path}
+		args = append(args, spec.StaticArgs...)
+		args = append(args, deliveryArgsFlat(spec.Delivery, spec.Params)...)
+		stdin, env, err := deliveryExtras(spec.Delivery, spec.Params)
+		return "sh", args, stdin, env, err
+	case interpreterBash:
+		args := []string{spec.Path}
+		args = append(args, spec.StaticArgs...)
+		args = append(args, deliveryArgsFlat(spec.Delivery, spec.Params)...)
+		stdin, env, err := deliveryExtras(spec.Delivery, spec.Params)
+		return "bash", args, stdin, env, err
 	case interpreterExe:
 		args := append([]string{}, spec.StaticArgs...)
 		args = append(args, deliveryArgsFlat(spec.Delivery, spec.Params)...)
