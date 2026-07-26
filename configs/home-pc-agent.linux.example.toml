@@ -17,6 +17,9 @@ enabled = true
 [plugins.display_kscreen]
 enabled = true
 
+[plugins.inhibit_freedesktop]
+enabled = true
+
 [plugins.powerprofile_powerprofilesctl]
 enabled = true
 timeout = "10s"
