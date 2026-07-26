@@ -10,6 +10,7 @@ import (
 	"github.com/tarik02/home-pc-agent/internal/plugins/display_kscreen"
 	"github.com/tarik02/home-pc-agent/internal/plugins/display_windows"
 	"github.com/tarik02/home-pc-agent/internal/plugins/fancontrol"
+	"github.com/tarik02/home-pc-agent/internal/plugins/inhibit_freedesktop"
 	"github.com/tarik02/home-pc-agent/internal/plugins/powerplan"
 	"github.com/tarik02/home-pc-agent/internal/plugins/powerprofile_powerprofilesctl"
 	"github.com/tarik02/home-pc-agent/internal/plugins/runner"
@@ -60,6 +61,13 @@ func Builtin() []Entry {
 			Entities: []string{"display.off"},
 			Factory:  display_kscreen.NewFactory(),
 			Validate: decodeEnabled("display_kscreen"),
+		},
+		{
+			ID:       "inhibit_freedesktop",
+			OS:       []string{"linux"},
+			Entities: []string{"session.lock_inhibited", "display.dim_inhibited"},
+			Factory:  inhibit_freedesktop.NewFactory(),
+			Validate: decodeEnabled("inhibit_freedesktop"),
 		},
 		{
 			ID:       "powerplan_windows",
