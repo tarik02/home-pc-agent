@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
@@ -13,7 +14,10 @@ import (
 	"github.com/tarik02/home-pc-agent/internal/core/plugin"
 )
 
-const pluginID = "inhibit_freedesktop"
+const (
+	pluginID                 = "inhibit_freedesktop"
+	availabilityPollInterval = 5 * time.Second
+)
 
 type Factory struct{}
 
@@ -44,6 +48,7 @@ type inhibitor struct {
 	interfaceName string
 	cookie        uint32
 	active        bool
+	availability  entity.Availability
 }
 
 type Plugin struct {
@@ -86,12 +91,6 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 		},
 	}
 
-	for _, item := range inhibitors {
-		if call := conn.Object(item.destination, item.path).CallWithContext(ctx, "org.freedesktop.DBus.Peer.Ping", 0); call.Err != nil {
-			return fmt.Errorf("connect to %s: %w", item.destination, call.Err)
-		}
-	}
-
 	p.host = host
 	p.conn = conn
 	p.inhibitors = make(map[string]*inhibitor, len(inhibitors))
@@ -109,13 +108,53 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 		if err := host.PublishState(id, false); err != nil {
 			return err
 		}
-		if err := host.SetAvailability(id, entity.AvailabilityOnline); err != nil {
-			return err
-		}
 	}
+	p.refreshAvailability(ctx)
+	host.Go("inhibitor-availability", func(loopCtx context.Context) error {
+		ticker := time.NewTicker(availabilityPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return nil
+			case <-ticker.C:
+				p.refreshAvailability(loopCtx)
+			}
+		}
+	})
 
 	started = true
 	return nil
+}
+
+func (p *Plugin) refreshAvailability(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, item := range p.inhibitors {
+		call := p.conn.Object(item.destination, item.path).CallWithContext(ctx, "org.freedesktop.DBus.Peer.Ping", 0)
+		availability := entity.AvailabilityUnavailable
+		if call.Err == nil {
+			availability = entity.AvailabilityOnline
+		}
+		if item.availability == availability {
+			continue
+		}
+
+		item.availability = availability
+		_ = p.host.SetAvailability(item.entity.ID, availability)
+		if availability == entity.AvailabilityOnline {
+			p.logger.Info("inhibitor service available", zap.String("destination", item.destination))
+			continue
+		}
+
+		if item.active {
+			item.active = false
+			item.cookie = 0
+			_ = p.host.PublishState(item.entity.ID, false)
+		}
+		p.logger.Warn("inhibitor service unavailable; retrying", zap.String("destination", item.destination), zap.Error(call.Err))
+	}
 }
 
 func (p *Plugin) Stop(ctx context.Context) error {
@@ -156,9 +195,11 @@ func (p *Plugin) handleCommand(ctx context.Context, id string, command plugin.Co
 	if enabled {
 		var cookie uint32
 		if call := object.CallWithContext(ctx, item.interfaceName+".Inhibit", 0, "home-pc-agent", "Controlled by Home Assistant"); call.Err != nil {
+			item.availability = entity.AvailabilityUnavailable
 			_ = p.host.SetAvailability(id, entity.AvailabilityUnavailable)
 			return fmt.Errorf("enable %s: %w", id, call.Err)
 		} else if err := call.Store(&cookie); err != nil {
+			item.availability = entity.AvailabilityUnavailable
 			_ = p.host.SetAvailability(id, entity.AvailabilityUnavailable)
 			return fmt.Errorf("read %s inhibitor cookie: %w", id, err)
 		}
@@ -166,12 +207,14 @@ func (p *Plugin) handleCommand(ctx context.Context, id string, command plugin.Co
 		item.active = true
 	} else {
 		if call := object.CallWithContext(ctx, item.interfaceName+".UnInhibit", 0, item.cookie); call.Err != nil {
+			item.availability = entity.AvailabilityUnavailable
 			_ = p.host.SetAvailability(id, entity.AvailabilityUnavailable)
 			return fmt.Errorf("disable %s: %w", id, call.Err)
 		}
 		item.active = false
 	}
 
+	item.availability = entity.AvailabilityOnline
 	_ = p.host.SetAvailability(id, entity.AvailabilityOnline)
 	return p.host.PublishState(id, enabled)
 }
