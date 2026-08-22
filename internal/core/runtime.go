@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -20,22 +21,22 @@ type ConfigValidator func(cfg *config.Config) error
 
 type Runtime struct {
 	cfgPath         string
-	cfg             *config.Config
-	bus             *events.EventBus
-	registry        *EntityRegistry
-	router          *CommandRouter
-	plugins         *PluginManager
-	transports      *TransportManager
 	logger          *zap.Logger
-	factories       []plugin.PluginFactory
+	factories       []plugin.Factory
 	buildTransports TransportBuilder
 	validateConfig  ConfigValidator
 	configWatcher   *config.Watcher
+	current         *runtimeGeneration
 
 	mu sync.Mutex
 }
 
-func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factories []plugin.PluginFactory, buildTransports TransportBuilder, transports []coretransport.Transport, validateConfig ConfigValidator) (*Runtime, error) {
+type runtimeGeneration struct {
+	plugins    *PluginManager
+	transports *TransportManager
+}
+
+func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factories []plugin.Factory, buildTransports TransportBuilder, transports []coretransport.Transport, validateConfig ConfigValidator) (*Runtime, error) {
 	if validateConfig == nil {
 		return nil, fmt.Errorf("validateConfig is required")
 	}
@@ -45,22 +46,15 @@ func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factorie
 	if buildTransports == nil {
 		buildTransports = func(cfg *config.Config, logger *zap.Logger) []coretransport.Transport { return transports }
 	}
-	bus := events.NewBus()
-	registry := NewEntityRegistry(bus)
-	router := NewCommandRouter()
-	return &Runtime{
+	runtime := &Runtime{
 		cfgPath:         cfgPath,
-		cfg:             cfg,
-		bus:             bus,
-		registry:        registry,
-		router:          router,
-		plugins:         NewPluginManager(cfg, registry, router, bus, logger, factories),
-		transports:      NewTransportManager(cfg, registry, router, bus, logger, transports),
 		logger:          logger,
 		factories:       factories,
 		buildTransports: buildTransports,
 		validateConfig:  validateConfig,
-	}, nil
+	}
+	runtime.current = runtime.newGeneration(cfg, transports)
+	return runtime, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -71,13 +65,14 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return fmt.Errorf("watch config %q: %w", r.cfgPath, err)
 	}
 	r.configWatcher = watcher
-	defer r.configWatcher.Close()
+	defer func() {
+		_ = r.configWatcher.Close()
+	}()
 
-	if err := r.transports.Start(ctx); err != nil {
-		return err
-	}
-	if err := r.plugins.Start(ctx); err != nil {
-		_ = r.transports.Stop(context.Background())
+	r.mu.Lock()
+	err = r.current.Start(ctx)
+	r.mu.Unlock()
+	if err != nil {
 		return err
 	}
 
@@ -86,12 +81,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), defaultStopTimeout)
 	defer cancel()
-	pluginErr := r.plugins.Stop(stopCtx)
-	transportErr := r.transports.Stop(stopCtx)
-	if pluginErr != nil {
-		return pluginErr
-	}
-	return transportErr
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.current.Stop(stopCtx)
 }
 
 func (r *Runtime) reloadFromDisk(ctx context.Context) {
@@ -108,26 +100,68 @@ func (r *Runtime) reloadFromDisk(ctx context.Context) {
 		return
 	}
 
-	stopCtx, cancel := context.WithTimeout(ctx, defaultStopTimeout)
-	defer cancel()
-
-	if err := r.plugins.Stop(stopCtx); err != nil {
-		r.logger.Warn("config reload aborted: failed to stop plugins", zap.Error(err))
-		return
-	}
-
-	r.cfg = cfg
 	transports := r.buildTransports(cfg, r.logger)
-	if err := r.transports.Reload(ctx, cfg, transports); err != nil {
-		r.logger.Error("config reload failed: transports did not restart", zap.Error(err))
-		return
-	}
-	if err := r.plugins.Reload(ctx, cfg); err != nil {
-		r.logger.Error("config reload failed: plugins did not restart", zap.Error(err))
+	candidate := r.newGeneration(cfg, transports)
+	previous := r.current
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), defaultStopTimeout)
+	defer cancel()
+	if err := previous.Stop(stopCtx); err != nil {
+		restoreErr := previous.Start(ctx)
+		r.logger.Error("config reload aborted: failed to stop current runtime",
+			zap.NamedError("stop_error", err),
+			zap.NamedError("restore_error", restoreErr),
+		)
 		return
 	}
 
+	if err := candidate.Start(ctx); err != nil {
+		candidateStopCtx, candidateStopCancel := context.WithTimeout(context.Background(), defaultStopTimeout)
+		candidateStopErr := candidate.Stop(candidateStopCtx)
+		candidateStopCancel()
+		restoreErr := previous.Start(ctx)
+		r.logger.Error("config reload failed; restored previous runtime",
+			zap.Error(err),
+			zap.NamedError("candidate_cleanup_error", candidateStopErr),
+			zap.NamedError("restore_error", restoreErr),
+		)
+		return
+	}
+
+	r.current = candidate
 	r.logger.Info("config reloaded", zap.String("path", r.cfgPath))
+}
+
+func (r *Runtime) newGeneration(cfg *config.Config, transports []coretransport.Transport) *runtimeGeneration {
+	bus := events.NewBus()
+	registry := NewEntityRegistry(bus)
+	router := NewCommandRouter()
+	return &runtimeGeneration{
+		plugins:    NewPluginManager(cfg, registry, router, bus, r.logger, r.factories),
+		transports: NewTransportManager(cfg, registry, router, bus, r.logger, transports),
+	}
+}
+
+func (g *runtimeGeneration) Start(ctx context.Context) error {
+	if err := g.transports.Start(ctx); err != nil {
+		return err
+	}
+	if err := g.plugins.Start(ctx); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), defaultStopTimeout)
+		stopErr := g.transports.Stop(stopCtx)
+		cancel()
+		if stopErr != nil {
+			return fmt.Errorf("%w; stop transports after plugin failure: %v", err, stopErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func (g *runtimeGeneration) Stop(ctx context.Context) error {
+	pluginErr := g.plugins.Stop(ctx)
+	transportErr := g.transports.Stop(ctx)
+	return errors.Join(pluginErr, transportErr)
 }
 
 const defaultStopTimeout = 30 * time.Second

@@ -23,30 +23,28 @@ const (
 
 var profileLinePattern = regexp.MustCompile(`^\s*\*?\s*(\S+):`)
 
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
-	}
-	if cfg.Timeout == 0 {
-		cfg.Timeout = 10 * time.Second
-	}
-	return &Plugin{cfg: cfg, logger: ctx.Logger()}, nil
-}
-
 type Config struct {
 	Enabled bool          `mapstructure:"enabled"`
 	Timeout time.Duration `mapstructure:"timeout"`
+}
+
+func NewFactory() plugin.Factory {
+	return plugin.ConfigFactory[Config](
+		plugin.Descriptor{
+			ID:               pluginID,
+			OperatingSystems: []string{"linux"},
+			EntityIDs:        []string{entityID},
+		},
+		func(cfg Config) (Config, error) {
+			if cfg.Timeout == 0 {
+				cfg.Timeout = 10 * time.Second
+			}
+			return cfg, nil
+		},
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{cfg: cfg, logger: logger}
+		},
+	)
 }
 
 type Profile struct {
@@ -61,10 +59,6 @@ type Plugin struct {
 	logger   *zap.Logger
 }
 
-func (p *Plugin) ID() string {
-	return pluginID
-}
-
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	p.host = host
 	profiles, err := p.discoverProfiles(ctx)
@@ -76,7 +70,7 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	}
 	p.profiles = profiles
 	options := p.options()
-	_, err = host.RegisterEntity(entity.Entity{
+	err = host.RegisterEntity(entity.Entity{
 		ID:      entityID,
 		Name:    "Power Profile",
 		Kind:    entity.KindSelect,

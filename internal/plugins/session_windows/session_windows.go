@@ -15,36 +15,28 @@ import (
 
 const pluginID = "session_windows"
 
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
-	}
-	return &Plugin{cfg: cfg, logger: ctx.Logger()}, nil
-}
-
 type Config struct {
 	Enabled bool `mapstructure:"enabled"`
+}
+
+func NewFactory() plugin.Factory {
+	return plugin.ConfigFactory[Config](
+		plugin.Descriptor{
+			ID:               pluginID,
+			OperatingSystems: []string{"windows"},
+			EntityIDs:        []string{"session.lock", "session.sleep"},
+		},
+		nil,
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{cfg: cfg, logger: logger}
+		},
+	)
 }
 
 type Plugin struct {
 	cfg    Config
 	host   plugin.PluginHost
 	logger *zap.Logger
-}
-
-func (p *Plugin) ID() string {
-	return pluginID
 }
 
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
@@ -54,7 +46,7 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 		{ID: "session.sleep", Name: "Sleep PC", Kind: entity.KindButton, Icon: "mdi:power-sleep"},
 	}
 	for _, button := range buttons {
-		if _, err := host.RegisterEntity(button); err != nil {
+		if err := host.RegisterEntity(button); err != nil {
 			return err
 		}
 		id := button.ID

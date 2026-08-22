@@ -10,11 +10,7 @@ import (
 	"github.com/tarik02/home-pc-agent/internal/core/entity"
 )
 
-func MapGetterToOptionName(action ActionConfig, options map[string]OptionConfig, raw string) (string, error) {
-	return (&Plugin{}).mapGetterToOptionName(action, options, raw)
-}
-
-func (p *Plugin) mapGetterToOptionName(action ActionConfig, options map[string]OptionConfig, raw string) (string, error) {
+func mapGetterToOptionName(action ActionConfig, options map[string]OptionConfig, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("getter value is empty")

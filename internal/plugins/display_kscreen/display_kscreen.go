@@ -21,26 +21,18 @@ const (
 	timeout  = 10 * time.Second
 )
 
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
-	}
-	return &Plugin{cfg: cfg, logger: ctx.Logger()}, nil
-}
-
 type Config struct {
 	Enabled bool `mapstructure:"enabled"`
+}
+
+func NewFactory() plugin.Factory {
+	return plugin.ConfigFactory[Config](
+		plugin.Descriptor{ID: pluginID, OperatingSystems: []string{"linux"}, EntityIDs: []string{entityID}},
+		nil,
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{cfg: cfg, logger: logger}
+		},
+	)
 }
 
 type Plugin struct {
@@ -49,17 +41,13 @@ type Plugin struct {
 	logger *zap.Logger
 }
 
-func (p *Plugin) ID() string {
-	return pluginID
-}
-
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	if err := externalcmd.Require("kscreen-doctor"); err != nil {
 		return fmt.Errorf("preflight: %w", err)
 	}
 	p.host = host
 	button := entity.Entity{ID: entityID, Name: "Display Off", Kind: entity.KindButton, Icon: "mdi:monitor-off"}
-	if _, err := host.RegisterEntity(button); err != nil {
+	if err := host.RegisterEntity(button); err != nil {
 		return err
 	}
 	if err := host.SubscribeCommand(entityID, func(ctx context.Context, command plugin.Command) error {

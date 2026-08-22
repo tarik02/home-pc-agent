@@ -74,8 +74,8 @@ func NewRootCommand() *cobra.Command {
 			if _, err := loadAndValidate(configPath); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "config valid: %s\n", configPath)
-			return nil
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "config valid: %s\n", configPath)
+			return err
 		},
 	}
 	configCmd.AddCommand(validateCmd)
@@ -95,7 +95,9 @@ func NewRootCommand() *cobra.Command {
 			factories := catalog.Factories()
 			sort.Slice(factories, func(i, j int) bool { return factories[i].ID() < factories[j].ID() })
 			for _, factory := range factories {
-				fmt.Fprintf(cmd.OutOrStdout(), "%-32s builtin enabled=%t\n", factory.ID(), cfg.PluginEnabled(factory.ID()))
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%-32s builtin enabled=%t\n", factory.ID(), cfg.PluginEnabled(factory.ID())); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
@@ -143,7 +145,9 @@ func runAgent(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	defer logger.Sync()
+	defer func() {
+		_ = logger.Sync()
+	}()
 
 	buildTransports := func(cfg *config.Config, logger *zap.Logger) []coretransport.Transport {
 		return enabledTransports(cfg, logger)

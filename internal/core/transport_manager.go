@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -21,6 +22,7 @@ type TransportManager struct {
 	bus        *events.EventBus
 	logger     *zap.Logger
 	transports map[string]coretransport.Transport
+	started    map[string]struct{}
 }
 
 func NewTransportManager(cfg *config.Config, registry *EntityRegistry, router *CommandRouter, bus *events.EventBus, logger *zap.Logger, transports []coretransport.Transport) *TransportManager {
@@ -38,6 +40,7 @@ func NewTransportManager(cfg *config.Config, registry *EntityRegistry, router *C
 		bus:        bus,
 		logger:     logger,
 		transports: transportMap,
+		started:    make(map[string]struct{}),
 	}
 }
 
@@ -53,33 +56,27 @@ func (m *TransportManager) Start(ctx context.Context) error {
 		registry: m.registry,
 		router:   m.router,
 		bus:      m.bus,
-		logger:   m.logger,
 	}
 	for _, id := range ids {
+		if _, ok := m.started[id]; ok {
+			continue
+		}
 		t := m.transports[id]
 		if err := t.Start(ctx, host); err != nil {
-			return fmt.Errorf("start transport %q: %w", id, err)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), defaultStopTimeout)
+			cleanupErr := m.Stop(cleanupCtx)
+			cancel()
+			return errors.Join(fmt.Errorf("start transport %q: %w", id, err), cleanupErr)
 		}
+		m.started[id] = struct{}{}
 		m.logger.Info("transport started", zap.String("transport", id))
 	}
 	return nil
 }
 
-func (m *TransportManager) Reload(ctx context.Context, cfg *config.Config, transports []coretransport.Transport) error {
-	if err := m.Stop(ctx); err != nil {
-		return err
-	}
-	m.cfg = cfg
-	m.transports = make(map[string]coretransport.Transport, len(transports))
-	for _, t := range transports {
-		m.transports[t.ID()] = t
-	}
-	return m.Start(ctx)
-}
-
 func (m *TransportManager) Stop(ctx context.Context) error {
-	ids := make([]string, 0, len(m.transports))
-	for id := range m.transports {
+	ids := make([]string, 0, len(m.started))
+	for id := range m.started {
 		ids = append(ids, id)
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(ids)))
@@ -87,9 +84,13 @@ func (m *TransportManager) Stop(ctx context.Context) error {
 	var firstErr error
 	for _, id := range ids {
 		t := m.transports[id]
-		if err := t.Stop(ctx); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("stop transport %q: %w", id, err)
+		if err := t.Stop(ctx); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("stop transport %q: %w", id, err)
+			}
+			continue
 		}
+		delete(m.started, id)
 		m.logger.Info("transport stopped", zap.String("transport", id))
 	}
 	return firstErr
@@ -100,7 +101,6 @@ type transportHost struct {
 	registry *EntityRegistry
 	router   *CommandRouter
 	bus      *events.EventBus
-	logger   *zap.Logger
 }
 
 func (h *transportHost) AgentID() string {
@@ -113,10 +113,6 @@ func (h *transportHost) AgentName() string {
 
 func (h *transportHost) Entities() []entity.Entity {
 	return h.registry.List()
-}
-
-func (h *transportHost) Logger() *zap.Logger {
-	return h.logger
 }
 
 func (h *transportHost) RouteCommand(ctx context.Context, command plugin.Command) error {

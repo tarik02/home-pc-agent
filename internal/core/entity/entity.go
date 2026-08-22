@@ -32,16 +32,15 @@ type Option struct {
 }
 
 type Entity struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Kind        Kind              `json:"kind"`
-	Options     []Option          `json:"options,omitempty"`
-	Icon        string            `json:"icon,omitempty"`
-	DeviceClass string            `json:"device_class,omitempty"`
-	StateClass  string            `json:"state_class,omitempty"`
-	Unit        string            `json:"unit,omitempty"`
-	Category    string            `json:"category,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Kind        Kind     `json:"kind"`
+	Options     []Option `json:"options,omitempty"`
+	Icon        string   `json:"icon,omitempty"`
+	DeviceClass string   `json:"device_class,omitempty"`
+	StateClass  string   `json:"state_class,omitempty"`
+	Unit        string   `json:"unit,omitempty"`
+	Category    string   `json:"category,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]*$`)
