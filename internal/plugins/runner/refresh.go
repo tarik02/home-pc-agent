@@ -5,7 +5,10 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
+
+const refreshConcurrency = 4
 
 func (a ActionConfig) effectiveRefreshTags() []string {
 	if len(a.RefreshTags) > 0 {
@@ -14,49 +17,13 @@ func (a ActionConfig) effectiveRefreshTags() []string {
 	return a.Tags
 }
 
-func (p *Plugin) refreshAllGetterStates(ctx context.Context) {
-	p.refreshAllDiscoveredOptions(ctx)
-
-	p.mu.Lock()
-	runtimes := make([]*actionRuntime, 0, len(p.runtimes))
-	for _, runtime := range p.runtimes {
-		if runtime.action.State.Source == stateGetter {
-			runtimes = append(runtimes, runtime)
-		}
-	}
-	p.mu.Unlock()
-
-	for _, runtime := range runtimes {
-		if err := p.refreshGetterState(ctx, runtime); err != nil {
-			p.logger.Warn("runner startup getter refresh failed", zap.String("entity_id", runtime.entityID), zap.Error(err))
-		}
-	}
-}
-
-func (p *Plugin) refreshAllDiscoveredOptions(ctx context.Context) {
-	p.mu.Lock()
-	runtimes := make([]*actionRuntime, 0, len(p.runtimes))
-	for _, runtime := range p.runtimes {
-		if runtime.action.hasOptionsGetter() {
-			runtimes = append(runtimes, runtime)
-		}
-	}
-	p.mu.Unlock()
-
-	for _, runtime := range runtimes {
-		if err := p.refreshDiscoveredOptions(ctx, runtime); err != nil {
-			p.logger.Warn("runner startup options refresh failed", zap.String("entity_id", runtime.entityID), zap.Error(err))
-		}
-	}
-}
-
 func (p *Plugin) refreshByTags(ctx context.Context, tags []string) {
 	tagSet := normalizedTagSet(tags)
 	if len(tagSet) == 0 {
 		return
 	}
 
-	p.mu.Lock()
+	p.mu.RLock()
 	optionTargets := make([]*actionRuntime, 0)
 	stateTargets := make([]*actionRuntime, 0)
 	for _, runtime := range p.runtimes {
@@ -70,18 +37,18 @@ func (p *Plugin) refreshByTags(ctx context.Context, tags []string) {
 			stateTargets = append(stateTargets, runtime)
 		}
 	}
-	p.mu.Unlock()
+	p.mu.RUnlock()
 
-	for _, runtime := range optionTargets {
-		if err := p.refreshDiscoveredOptions(ctx, runtime); err != nil {
+	refreshConcurrently(ctx, optionTargets, func(refreshCtx context.Context, runtime *actionRuntime) {
+		if err := p.refreshDiscoveredOptions(refreshCtx, runtime); err != nil {
 			p.logger.Debug("runner tagged options refresh failed", zap.String("entity_id", runtime.entityID), zap.Strings("tags", tags), zap.Error(err))
 		}
-	}
-	for _, runtime := range stateTargets {
-		if err := p.refreshGetterState(ctx, runtime); err != nil {
+	})
+	refreshConcurrently(ctx, stateTargets, func(refreshCtx context.Context, runtime *actionRuntime) {
+		if err := p.refreshGetterState(refreshCtx, runtime); err != nil {
 			p.logger.Debug("runner tagged getter refresh failed", zap.String("entity_id", runtime.entityID), zap.Strings("tags", tags), zap.Error(err))
 		}
-	}
+	})
 }
 
 func (p *Plugin) refreshGetterState(ctx context.Context, runtime *actionRuntime) error {
@@ -89,8 +56,20 @@ func (p *Plugin) refreshGetterState(ctx context.Context, runtime *actionRuntime)
 	if err != nil {
 		return err
 	}
-	p.setLastSuccess(runtime.entityID, value)
 	return p.host.PublishState(runtime.entityID, StateEnvelope{"state": formatHAState(runtime.action.Kind, value)})
+}
+
+func refreshConcurrently(ctx context.Context, runtimes []*actionRuntime, refresh func(context.Context, *actionRuntime)) {
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(refreshConcurrency)
+	for _, runtime := range runtimes {
+		runtime := runtime
+		group.Go(func() error {
+			refresh(groupCtx, runtime)
+			return nil
+		})
+	}
+	_ = group.Wait()
 }
 
 func normalizedTagSet(tags []string) map[string]struct{} {

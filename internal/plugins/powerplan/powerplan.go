@@ -25,34 +25,32 @@ const (
 var modeKeyUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
 var modeKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return &Plugin{
-		cfg:    cfg,
-		logger: ctx.Logger(),
-	}, nil
-}
-
 type Config struct {
 	Enabled bool            `mapstructure:"enabled"`
 	Modes   map[string]Mode `mapstructure:"modes"`
 	Timeout time.Duration   `mapstructure:"timeout"`
+}
+
+func NewFactory() plugin.Factory {
+	return plugin.ConfigFactory[Config](
+		plugin.Descriptor{
+			ID:               pluginID,
+			OperatingSystems: []string{"windows"},
+			EntityIDs:        []string{entityID},
+		},
+		func(cfg Config) (Config, error) {
+			cfg = cfg.withDefaults()
+			if cfg.Enabled {
+				if err := cfg.Validate(); err != nil {
+					return Config{}, err
+				}
+			}
+			return cfg, nil
+		},
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{cfg: cfg, logger: logger}
+		},
+	)
 }
 
 type Mode struct {
@@ -60,10 +58,14 @@ type Mode struct {
 	GUID string `mapstructure:"guid"`
 }
 
-func (c Config) Validate() error {
+func (c Config) withDefaults() Config {
 	if c.Timeout == 0 {
 		c.Timeout = 10 * time.Second
 	}
+	return c
+}
+
+func (c Config) Validate() error {
 	for key, mode := range c.Modes {
 		if !modeKeyPattern.MatchString(key) {
 			return fmt.Errorf("modes.%s: mode key must match %s", key, modeKeyPattern.String())
@@ -85,10 +87,6 @@ type Plugin struct {
 	logger *zap.Logger
 }
 
-func (p *Plugin) ID() string {
-	return pluginID
-}
-
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	p.host = host
 	modes, err := p.resolveModes(ctx)
@@ -100,7 +98,7 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	}
 	p.modes = modes
 	options := p.options()
-	_, err = host.RegisterEntity(entity.Entity{
+	err = host.RegisterEntity(entity.Entity{
 		ID:      entityID,
 		Name:    "Power Plan",
 		Kind:    entity.KindSelect,
@@ -143,11 +141,7 @@ func (p *Plugin) handleCommand(ctx context.Context, command plugin.Command) erro
 		return fmt.Errorf("power plan %q is no longer available", modeID)
 	}
 
-	timeout := p.cfg.Timeout
-	if timeout == 0 {
-		timeout = 10 * time.Second
-	}
-	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	cmdCtx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, "powercfg.exe", "/S", mode.GUID)
@@ -163,11 +157,7 @@ func (p *Plugin) handleCommand(ctx context.Context, command plugin.Command) erro
 }
 
 func (p *Plugin) activeMode(ctx context.Context) (string, error) {
-	timeout := p.cfg.Timeout
-	if timeout == 0 {
-		timeout = 10 * time.Second
-	}
-	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	cmdCtx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
 	defer cancel()
 
 	output, err := exec.CommandContext(cmdCtx, "powercfg.exe", "/GETACTIVESCHEME").CombinedOutput()
@@ -254,13 +244,6 @@ func shortGUID(guid string) string {
 		return "unknown"
 	}
 	return guid
-}
-
-func (p *Plugin) timeout() time.Duration {
-	if p.cfg.Timeout != 0 {
-		return p.cfg.Timeout
-	}
-	return 10 * time.Second
 }
 
 func (p *Plugin) options() []entity.Option {

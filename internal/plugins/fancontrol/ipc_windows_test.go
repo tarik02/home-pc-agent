@@ -9,13 +9,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestParseFanControlIPCReplies(t *testing.T) {
-	listPayload := appendStringField(nil, 1, "terra-balanced.json")
-	listPayload = appendStringField(listPayload, 1, "terra-quiet.json")
-	listPayload = appendStringField(listPayload, 2, "terra-quiet.json")
-	listPayload = appendStringField(listPayload, 3, `C:\Program Files (x86)\FanControl\Configurations`)
+	listPayload, err := proto.Marshal(&ListAvailableConfigsReply{
+		Configs:       []string{"terra-balanced.json", "terra-quiet.json"},
+		CurrentConfig: "terra-quiet.json",
+		ConfigFolder:  `C:\Program Files (x86)\FanControl\Configurations`,
+	})
+	require.NoError(t, err)
 
 	configs, err := parseListAvailableConfigsReply(listPayload)
 	require.NoError(t, err)
@@ -23,11 +26,11 @@ func TestParseFanControlIPCReplies(t *testing.T) {
 	require.Equal(t, "terra-quiet.json", configs.CurrentConfig)
 	require.Equal(t, `C:\Program Files (x86)\FanControl\Configurations`, configs.ConfigFolder)
 
-	commandPayload := appendVarintField(nil, 1, commandStatusOK)
-	commandPayload = appendStringField(commandPayload, 2, "alice")
+	commandPayload, err := proto.Marshal(&CommandReply{Status: CommandStatus_COMMAND_STATUS_OK, User: "alice"})
+	require.NoError(t, err)
 	status, user, err := parseCommandReply(commandPayload)
 	require.NoError(t, err)
-	require.Equal(t, commandStatusOK, status)
+	require.Equal(t, CommandStatus_COMMAND_STATUS_OK, status)
 	require.Equal(t, "alice", user)
 }
 

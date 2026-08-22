@@ -73,12 +73,7 @@ func runCommand(ctx context.Context, spec CommandSpec) (RunResult, error) {
 		}
 	}
 
-	if spec.Output.Capture {
-		result.Stdout, result.Stderr, result.Truncated = truncateOutput(result.Stdout, result.Stderr, spec.Output.MaxBytes)
-	} else {
-		result.Stdout = ""
-		result.Stderr = ""
-	}
+	result.Stdout, result.Stderr, result.Truncated = truncateOutput(result.Stdout, result.Stderr, spec.Output.MaxBytes)
 	return result, nil
 }
 

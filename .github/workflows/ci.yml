@@ -35,6 +35,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Buf
+        if: matrix.os == 'ubuntu-latest'
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.57.2
+
+      - name: Check generated protobuf code
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          buf lint
+          buf generate
+          git diff --exit-code -- internal/plugins/fancontrol/fancontrol.pb.go
+
       - name: Check formatting
         shell: bash
         run: |

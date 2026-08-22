@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -16,17 +17,6 @@ func sortedParamKeys(params map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func mergeParameters(base map[string]any, overlay map[string]any) map[string]any {
-	out := make(map[string]any, len(base)+len(overlay))
-	for key, value := range base {
-		out[key] = value
-	}
-	for key, value := range overlay {
-		out[key] = value
-	}
-	return out
 }
 
 func cloneParameters(params map[string]any) map[string]any {
@@ -71,18 +61,24 @@ func validateJSONParameters(schema map[string]ParameterSchema, params map[string
 		return fmt.Errorf("%s: json payload exceeds max_bytes (%d > %d)", prefix, len(raw), jsonCfg.MaxBytes)
 	}
 	if len(schema) == 0 {
-		if jsonCfg.Strict && len(params) == 0 {
-			return nil
-		}
 		return nil
 	}
-	if err := validateStructuredParameters(schema, params, prefix); err != nil {
-		return err
-	}
 	if jsonCfg.Strict {
-		for key := range params {
-			if _, ok := schema[key]; !ok {
-				return fmt.Errorf("%s: unknown parameter %q", prefix, key)
+		return validateStructuredParameters(schema, params, prefix)
+	}
+	for key, value := range params {
+		fieldSchema, ok := schema[key]
+		if !ok {
+			continue
+		}
+		if err := validateParameterValue(key, fieldSchema, value); err != nil {
+			return fmt.Errorf("%s.%s: %w", prefix, key, err)
+		}
+	}
+	for key, fieldSchema := range schema {
+		if fieldSchema.Required {
+			if _, ok := params[key]; !ok {
+				return fmt.Errorf("%s.%s: required", prefix, key)
 			}
 		}
 	}
@@ -156,6 +152,9 @@ func asInt64(value any) (int64, error) {
 	case int64:
 		return typed, nil
 	case float64:
+		if math.Trunc(typed) != typed || typed < math.MinInt64 || typed > math.MaxInt64 {
+			return 0, fmt.Errorf("not an integer")
+		}
 		return int64(typed), nil
 	case json.Number:
 		return typed.Int64()
