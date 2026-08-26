@@ -359,6 +359,10 @@ func (t *Transport) subscribeCommands(ctx context.Context, client pahomqtt.Clien
 			t.logger.Warn("mqtt command topic did not match expected layout", zap.String("topic", msg.Topic()))
 			return
 		}
+		if !t.isKnown(entityID) {
+			t.logger.Warn("mqtt command rejected: unknown entity", zap.String("entity_id", entityID))
+			return
+		}
 		payload, err := decodeCommandPayload(msg.Payload())
 		if err != nil {
 			t.logger.Warn("mqtt command payload is invalid", zap.String("entity_id", entityID), zap.Error(err))
