@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	transportID          = "mqtt"
-	commandQueueCapacity = 128
+	transportID                = "mqtt"
+	commandQueueCapacity       = 128
+	entityCommandQueueCapacity = 16
 )
 
 type Transport struct {
@@ -152,15 +153,43 @@ func (t *Transport) Stop(ctx context.Context) error {
 }
 
 func (t *Transport) commandLoop(ctx context.Context, host coretransport.Host, commands <-chan plugin.Command, done chan<- struct{}) {
-	defer close(done)
+	queues := make(map[string]chan plugin.Command)
+	var workers sync.WaitGroup
+	defer func() {
+		workers.Wait()
+		close(done)
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case command := <-commands:
-			if err := host.RouteCommand(ctx, command); err != nil {
-				t.logger.Warn("mqtt command rejected", zap.String("entity_id", command.EntityID), zap.Error(err))
+			queue := queues[command.EntityID]
+			if queue == nil {
+				queue = make(chan plugin.Command, entityCommandQueueCapacity)
+				queues[command.EntityID] = queue
+				workers.Add(1)
+				go func(entityCommands <-chan plugin.Command) {
+					defer workers.Done()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case entityCommand := <-entityCommands:
+							if err := host.RouteCommand(ctx, entityCommand); err != nil {
+								t.logger.Warn("mqtt command rejected", zap.String("entity_id", entityCommand.EntityID), zap.Error(err))
+							}
+						}
+					}
+				}(queue)
+			}
+			select {
+			case queue <- command:
+			case <-ctx.Done():
+				return
+			default:
+				t.logger.Warn("mqtt entity command queue full; command dropped", zap.String("entity_id", command.EntityID))
 			}
 		}
 	}

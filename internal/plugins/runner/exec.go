@@ -41,6 +41,7 @@ func runCommand(ctx context.Context, spec CommandSpec) (RunResult, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 5 * time.Second
 	configureCommand(cmd)
 	if stdin != nil {
 		cmd.Stdin = stdin
