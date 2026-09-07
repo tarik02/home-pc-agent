@@ -116,11 +116,8 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	if err := host.SetAvailability(entityID, entity.AvailabilityOnline); err != nil {
 		return err
 	}
-	if active, err := p.activeMode(ctx); err == nil && active != "" {
-		_ = host.PublishState(entityID, entity.OptionName(options, active))
-	} else if err != nil {
-		p.logger.Debug("active power plan could not be detected", zap.Error(err))
-	}
+	p.publishActiveState(ctx, options)
+	p.startStateRefresh(ctx, options)
 	return nil
 }
 
@@ -160,6 +157,46 @@ func (p *Plugin) handleCommand(ctx context.Context, command plugin.Command) erro
 
 	_ = p.host.SetAvailability(entityID, entity.AvailabilityOnline)
 	return p.host.PublishState(entityID, entity.OptionName(p.options(), modeID))
+}
+
+func (p *Plugin) publishActiveState(ctx context.Context, options []entity.Option) {
+	activeCtx, cancel := context.WithTimeout(ctx, p.timeout())
+	defer cancel()
+
+	active, err := p.activeMode(activeCtx)
+	if err != nil {
+		p.logger.Debug("active power plan could not be detected", zap.Error(err))
+		return
+	}
+	if active == "" {
+		p.logger.Debug("active power plan did not match a known mode")
+		return
+	}
+	_ = p.host.PublishState(entityID, entity.OptionName(options, active))
+}
+
+func (p *Plugin) startStateRefresh(ctx context.Context, options []entity.Option) {
+	p.host.Go("state-refresh", func(loopCtx context.Context) error {
+		for _, delay := range []time.Duration{3 * time.Second, 15 * time.Second} {
+			select {
+			case <-loopCtx.Done():
+				return nil
+			case <-time.After(delay):
+			}
+			p.publishActiveState(loopCtx, options)
+		}
+
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return nil
+			case <-ticker.C:
+				p.publishActiveState(loopCtx, options)
+			}
+		}
+	})
 }
 
 func (p *Plugin) activeMode(ctx context.Context) (string, error) {
