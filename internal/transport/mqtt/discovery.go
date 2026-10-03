@@ -93,6 +93,9 @@ func DiscoveryPayload(e entity.Entity, opts DiscoveryOptions) map[string]any {
 	}
 
 	switch e.Kind {
+	case entity.KindBinarySensor:
+		payload["payload_on"] = "true"
+		payload["payload_off"] = "false"
 	case entity.KindSelect:
 		payload["options"] = entity.OptionNames(e.Options)
 		payload["command_template"] = `{"value":"{{ value }}"}`
