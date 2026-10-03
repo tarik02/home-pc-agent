@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -18,7 +19,7 @@ type PluginManager struct {
 	router    *CommandRouter
 	bus       *events.EventBus
 	logger    *zap.Logger
-	factories map[string]plugin.PluginFactory
+	factories map[string]plugin.Factory
 	runtimes  map[string]*pluginRuntime
 }
 
@@ -27,8 +28,8 @@ type pluginRuntime struct {
 	scope  *PluginScope
 }
 
-func NewPluginManager(cfg *config.Config, registry *EntityRegistry, router *CommandRouter, bus *events.EventBus, logger *zap.Logger, factories []plugin.PluginFactory) *PluginManager {
-	factoryMap := make(map[string]plugin.PluginFactory, len(factories))
+func NewPluginManager(cfg *config.Config, registry *EntityRegistry, router *CommandRouter, bus *events.EventBus, logger *zap.Logger, factories []plugin.Factory) *PluginManager {
+	factoryMap := make(map[string]plugin.Factory, len(factories))
 	for _, factory := range factories {
 		factoryMap[factory.ID()] = factory
 	}
@@ -64,29 +65,28 @@ func (m *PluginManager) Start(ctx context.Context) error {
 
 		factory := m.factories[id]
 		logger := m.logger.With(zap.String("plugin", id))
-		factoryCtx := NewFactoryContext(m.cfg.PluginRaw(id), logger, m.cfg.Agent.ID, m.cfg.Agent.DataDir)
-		instance, err := factory.New(factoryCtx)
+		instance, err := factory.New(m.cfg.PluginRaw(id), logger)
 		if err != nil {
-			return fmt.Errorf("create plugin %q: %w", id, err)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), defaultStopTimeout)
+			cleanupErr := m.Stop(cleanupCtx)
+			cancel()
+			return errors.Join(fmt.Errorf("create plugin %q: %w", id, err), cleanupErr)
 		}
 
 		scope := NewPluginScope(ctx, id, m.registry, m.router, m.bus, logger)
 		if err := instance.Start(ctx, scope); err != nil {
-			_ = scope.Close(context.Background())
-			return fmt.Errorf("start plugin %q: %w", id, err)
+			scopeCtx, scopeCancel := context.WithTimeout(context.Background(), defaultStopTimeout)
+			scopeErr := scope.Close(scopeCtx)
+			scopeCancel()
+			managerCtx, managerCancel := context.WithTimeout(context.Background(), defaultStopTimeout)
+			managerErr := m.Stop(managerCtx)
+			managerCancel()
+			return errors.Join(fmt.Errorf("start plugin %q: %w", id, err), scopeErr, managerErr)
 		}
 		m.runtimes[id] = &pluginRuntime{plugin: instance, scope: scope}
 		logger.Info("plugin started")
 	}
 	return nil
-}
-
-func (m *PluginManager) Reload(ctx context.Context, cfg *config.Config) error {
-	if err := m.Stop(ctx); err != nil {
-		return err
-	}
-	m.cfg = cfg
-	return m.Start(ctx)
 }
 
 func (m *PluginManager) Stop(ctx context.Context) error {

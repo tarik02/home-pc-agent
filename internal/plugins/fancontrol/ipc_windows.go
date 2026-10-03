@@ -11,38 +11,20 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
 	fanControlPipeName = `\\.\pipe\FanControl`
 
 	grpcStatusOK = 0
-
-	commandStatusOK          = 1
-	commandStatusExit        = 2
-	commandStatusRejected    = 3
-	commandStatusUnsupported = 4
 )
 
 type fanControlConfigs struct {
 	Configs       []string
 	CurrentConfig string
 	ConfigFolder  string
-}
-
-type transportPayloadInfo struct {
-	Size         int
-	InSamePacket bool
-}
-
-type transportTrailers struct {
-	StatusCode   int
-	StatusDetail string
-}
-
-type transportMessage struct {
-	PayloadInfo *transportPayloadInfo
-	Trailers    *transportTrailers
 }
 
 type fanControlIPCConn struct {
@@ -121,7 +103,10 @@ func (c *fanControlIPCConn) CallUnary(ctx context.Context, method string, payloa
 	}()
 	defer close(done)
 
-	packet := encodeUnaryRequest(method, payload)
+	packet, err := encodeUnaryRequest(method, payload)
+	if err != nil {
+		return nil, err
+	}
 	var written uint32
 	if err := windows.WriteFile(c.handle, packet, &written, nil); err != nil {
 		if ctx.Err() != nil {
@@ -149,7 +134,10 @@ func (r fanControlRPC) ListConfigs(ctx context.Context) (fanControlConfigs, erro
 }
 
 func (r fanControlRPC) LoadConfig(ctx context.Context, configName string) error {
-	request := appendStringField(nil, 1, configName)
+	request, err := proto.Marshal(&LoadConfigRequest{ConfigName: configName})
+	if err != nil {
+		return fmt.Errorf("encode FanControl load-config request: %w", err)
+	}
 	payload, err := r.conn.CallUnary(ctx, "/FanControlRPC/LoadConfig", request)
 	if err != nil {
 		return err
@@ -158,24 +146,33 @@ func (r fanControlRPC) LoadConfig(ctx context.Context, configName string) error 
 	if err != nil {
 		return err
 	}
-	if status != commandStatusOK {
+	if status != CommandStatus_COMMAND_STATUS_OK {
 		return fmt.Errorf("FanControl returned %s for user %q", commandStatusName(status), user)
 	}
 	return nil
 }
 
-func encodeUnaryRequest(method string, payload []byte) []byte {
-	requestInit := appendStringField(nil, 1, method)
-	requestInit = appendVarintField(requestInit, 3, 1)
+func encodeUnaryRequest(method string, payload []byte) ([]byte, error) {
+	requestInit, err := proto.Marshal(&TransportMessage{
+		RequestInit: &RequestInit{Method: method, CallType: 1},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode FanControl request init: %w", err)
+	}
+	requestControl := protowire.AppendTag(nil, 2, protowire.BytesType)
+	requestControl = protowire.AppendBytes(requestControl, nil)
+	payloadInfo, err := proto.Marshal(&TransportMessage{
+		PayloadInfo: &PayloadInfo{Size: int32(len(payload)), InSamePacket: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode FanControl payload info: %w", err)
+	}
 
-	packet := appendDelimited(nil, appendBytesField(nil, 1, requestInit))
-	packet = appendDelimited(packet, appendBytesField(nil, 2, nil))
-
-	payloadInfo := appendVarintField(nil, 1, uint64(len(payload)))
-	payloadInfo = appendBoolField(payloadInfo, 2, true)
-	packet = appendDelimited(packet, appendBytesField(nil, 3, payloadInfo))
+	packet := protowire.AppendBytes(nil, requestInit)
+	packet = protowire.AppendBytes(packet, requestControl)
+	packet = protowire.AppendBytes(packet, payloadInfo)
 	packet = append(packet, payload...)
-	return packet
+	return packet, nil
 }
 
 func readUnaryResponse(ctx context.Context, handle windows.Handle) ([]byte, error) {
@@ -191,15 +188,15 @@ func readUnaryResponse(ctx context.Context, handle windows.Handle) ([]byte, erro
 
 		offset := 0
 		for offset < len(packet) {
-			message, read, err := consumeDelimited(packet[offset:])
-			if err != nil {
-				return nil, fmt.Errorf("parse FanControl IPC transport message: %w", err)
+			message, read := protowire.ConsumeBytes(packet[offset:])
+			if read < 0 {
+				return nil, fmt.Errorf("parse FanControl IPC transport message: %w", protowire.ParseError(read))
 			}
 			offset += read
 
-			transport, err := parseTransportMessage(message)
-			if err != nil {
-				return nil, err
+			var transport TransportMessage
+			if err := proto.Unmarshal(message, &transport); err != nil {
+				return nil, fmt.Errorf("decode FanControl IPC transport message: %w", err)
 			}
 			if transport.PayloadInfo != nil {
 				info := transport.PayloadInfo
@@ -207,13 +204,14 @@ func readUnaryResponse(ctx context.Context, handle windows.Handle) ([]byte, erro
 					return nil, fmt.Errorf("invalid FanControl IPC payload size %d", info.Size)
 				}
 				if info.InSamePacket {
-					if len(packet)-offset < info.Size {
+					size := int(info.Size)
+					if len(packet)-offset < size {
 						return nil, io.ErrUnexpectedEOF
 					}
-					payload = append(payload, packet[offset:offset+info.Size]...)
-					offset += info.Size
+					payload = append(payload, packet[offset:offset+size]...)
+					offset += size
 				} else {
-					extra, err := readPipeBytes(handle, info.Size)
+					extra, err := readPipeBytes(handle, int(info.Size))
 					if err != nil {
 						return nil, err
 					}
@@ -266,241 +264,35 @@ func readPipeBytes(handle windows.Handle, size int) ([]byte, error) {
 	return payload, nil
 }
 
-func parseTransportMessage(data []byte) (transportMessage, error) {
-	var message transportMessage
-	for len(data) > 0 {
-		field, wireType, n, err := consumeKey(data)
-		if err != nil {
-			return transportMessage{}, err
-		}
-		data = data[n:]
-
-		switch field {
-		case 2:
-			skipped, err := skipField(wireType, data)
-			if err != nil {
-				return transportMessage{}, err
-			}
-			data = data[skipped:]
-		case 3:
-			if wireType != wireBytes {
-				return transportMessage{}, fmt.Errorf("payload_info has wire type %d", wireType)
-			}
-			value, read, err := consumeBytes(data)
-			if err != nil {
-				return transportMessage{}, err
-			}
-			info, err := parsePayloadInfo(value)
-			if err != nil {
-				return transportMessage{}, err
-			}
-			message.PayloadInfo = &info
-			data = data[read:]
-		case 5:
-			if wireType != wireBytes {
-				return transportMessage{}, fmt.Errorf("trailers has wire type %d", wireType)
-			}
-			value, read, err := consumeBytes(data)
-			if err != nil {
-				return transportMessage{}, err
-			}
-			trailers, err := parseTrailers(value)
-			if err != nil {
-				return transportMessage{}, err
-			}
-			message.Trailers = &trailers
-			data = data[read:]
-		default:
-			skipped, err := skipField(wireType, data)
-			if err != nil {
-				return transportMessage{}, err
-			}
-			data = data[skipped:]
-		}
-	}
-	return message, nil
-}
-
-func parsePayloadInfo(data []byte) (transportPayloadInfo, error) {
-	var info transportPayloadInfo
-	for len(data) > 0 {
-		field, wireType, n, err := consumeKey(data)
-		if err != nil {
-			return transportPayloadInfo{}, err
-		}
-		data = data[n:]
-		switch field {
-		case 1:
-			if wireType != wireVarint {
-				return transportPayloadInfo{}, fmt.Errorf("payload size has wire type %d", wireType)
-			}
-			size, read, err := consumeVarint(data)
-			if err != nil {
-				return transportPayloadInfo{}, err
-			}
-			info.Size = int(size)
-			data = data[read:]
-		case 2:
-			if wireType != wireVarint {
-				return transportPayloadInfo{}, fmt.Errorf("payload in_same_packet has wire type %d", wireType)
-			}
-			value, read, err := consumeVarint(data)
-			if err != nil {
-				return transportPayloadInfo{}, err
-			}
-			info.InSamePacket = value != 0
-			data = data[read:]
-		default:
-			skipped, err := skipField(wireType, data)
-			if err != nil {
-				return transportPayloadInfo{}, err
-			}
-			data = data[skipped:]
-		}
-	}
-	return info, nil
-}
-
-func parseTrailers(data []byte) (transportTrailers, error) {
-	var trailers transportTrailers
-	for len(data) > 0 {
-		field, wireType, n, err := consumeKey(data)
-		if err != nil {
-			return transportTrailers{}, err
-		}
-		data = data[n:]
-		switch field {
-		case 2:
-			if wireType != wireVarint {
-				return transportTrailers{}, fmt.Errorf("status_code has wire type %d", wireType)
-			}
-			status, read, err := consumeVarint(data)
-			if err != nil {
-				return transportTrailers{}, err
-			}
-			trailers.StatusCode = int(status)
-			data = data[read:]
-		case 3:
-			if wireType != wireBytes {
-				return transportTrailers{}, fmt.Errorf("status_detail has wire type %d", wireType)
-			}
-			value, read, err := consumeBytes(data)
-			if err != nil {
-				return transportTrailers{}, err
-			}
-			trailers.StatusDetail = string(value)
-			data = data[read:]
-		default:
-			skipped, err := skipField(wireType, data)
-			if err != nil {
-				return transportTrailers{}, err
-			}
-			data = data[skipped:]
-		}
-	}
-	return trailers, nil
-}
-
 func parseListAvailableConfigsReply(data []byte) (fanControlConfigs, error) {
-	var configs fanControlConfigs
-	for len(data) > 0 {
-		field, wireType, n, err := consumeKey(data)
-		if err != nil {
-			return fanControlConfigs{}, err
-		}
-		data = data[n:]
-		switch field {
-		case 1:
-			if wireType != wireBytes {
-				return fanControlConfigs{}, fmt.Errorf("configs has wire type %d", wireType)
-			}
-			value, read, err := consumeBytes(data)
-			if err != nil {
-				return fanControlConfigs{}, err
-			}
-			configs.Configs = append(configs.Configs, string(value))
-			data = data[read:]
-		case 2:
-			if wireType != wireBytes {
-				return fanControlConfigs{}, fmt.Errorf("current_config has wire type %d", wireType)
-			}
-			value, read, err := consumeBytes(data)
-			if err != nil {
-				return fanControlConfigs{}, err
-			}
-			configs.CurrentConfig = string(value)
-			data = data[read:]
-		case 3:
-			if wireType != wireBytes {
-				return fanControlConfigs{}, fmt.Errorf("config_folder has wire type %d", wireType)
-			}
-			value, read, err := consumeBytes(data)
-			if err != nil {
-				return fanControlConfigs{}, err
-			}
-			configs.ConfigFolder = string(value)
-			data = data[read:]
-		default:
-			skipped, err := skipField(wireType, data)
-			if err != nil {
-				return fanControlConfigs{}, err
-			}
-			data = data[skipped:]
-		}
+	var reply ListAvailableConfigsReply
+	if err := proto.Unmarshal(data, &reply); err != nil {
+		return fanControlConfigs{}, err
 	}
-	return configs, nil
+	return fanControlConfigs{
+		Configs:       reply.Configs,
+		CurrentConfig: reply.CurrentConfig,
+		ConfigFolder:  reply.ConfigFolder,
+	}, nil
 }
 
-func parseCommandReply(data []byte) (int, string, error) {
-	var status int
-	var user string
-	for len(data) > 0 {
-		field, wireType, n, err := consumeKey(data)
-		if err != nil {
-			return 0, "", err
-		}
-		data = data[n:]
-		switch field {
-		case 1:
-			if wireType != wireVarint {
-				return 0, "", fmt.Errorf("command status has wire type %d", wireType)
-			}
-			value, read, err := consumeVarint(data)
-			if err != nil {
-				return 0, "", err
-			}
-			status = int(value)
-			data = data[read:]
-		case 2:
-			if wireType != wireBytes {
-				return 0, "", fmt.Errorf("command user has wire type %d", wireType)
-			}
-			value, read, err := consumeBytes(data)
-			if err != nil {
-				return 0, "", err
-			}
-			user = string(value)
-			data = data[read:]
-		default:
-			skipped, err := skipField(wireType, data)
-			if err != nil {
-				return 0, "", err
-			}
-			data = data[skipped:]
-		}
+func parseCommandReply(data []byte) (CommandStatus, string, error) {
+	var reply CommandReply
+	if err := proto.Unmarshal(data, &reply); err != nil {
+		return CommandStatus_COMMAND_STATUS_UNSPECIFIED, "", err
 	}
-	return status, user, nil
+	return reply.Status, reply.User, nil
 }
 
-func commandStatusName(status int) string {
+func commandStatusName(status CommandStatus) string {
 	switch status {
-	case commandStatusOK:
+	case CommandStatus_COMMAND_STATUS_OK:
 		return "Ok"
-	case commandStatusExit:
+	case CommandStatus_COMMAND_STATUS_EXIT:
 		return "Exit"
-	case commandStatusRejected:
+	case CommandStatus_COMMAND_STATUS_REJECTED:
 		return "Rejected"
-	case commandStatusUnsupported:
+	case CommandStatus_COMMAND_STATUS_UNSUPPORTED:
 		return "Unsupported"
 	default:
 		return fmt.Sprintf("CommandStatus(%d)", status)

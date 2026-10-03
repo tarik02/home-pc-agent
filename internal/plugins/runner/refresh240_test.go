@@ -7,7 +7,6 @@ import (
 )
 
 func TestMapGetterToOptionNameRefresh240With240Param(t *testing.T) {
-	p := &Plugin{}
 	action := ActionConfig{Kind: kindSelect}
 	options := map[string]OptionConfig{
 		"refresh_240": {
@@ -16,7 +15,7 @@ func TestMapGetterToOptionNameRefresh240With240Param(t *testing.T) {
 		},
 	}
 
-	name, err := p.mapGetterToOptionName(action, options, "240.016")
+	name, err := mapGetterToOptionName(action, options, "240.016")
 	require.NoError(t, err)
 	require.Equal(t, "240 Hz", name)
 }

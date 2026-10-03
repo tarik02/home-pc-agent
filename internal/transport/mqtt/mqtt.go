@@ -19,18 +19,23 @@ import (
 	coretransport "github.com/tarik02/home-pc-agent/internal/core/transport"
 )
 
-const transportID = "mqtt"
+const (
+	transportID                = "mqtt"
+	commandQueueCapacity       = 128
+	entityCommandQueueCapacity = 16
+)
 
 type Transport struct {
 	cfg    config.MQTTConfig
 	logger *zap.Logger
 
-	mu     sync.Mutex
-	client pahomqtt.Client
-	cancel context.CancelFunc
-	done   chan struct{}
-	known  map[string]entity.Entity
-	host   coretransport.Host
+	mu          sync.Mutex
+	client      pahomqtt.Client
+	cancel      context.CancelFunc
+	done        chan struct{}
+	commandDone chan struct{}
+	known       map[string]entity.Entity
+	host        coretransport.Host
 }
 
 func New(cfg config.MQTTConfig, logger *zap.Logger) *Transport {
@@ -61,9 +66,12 @@ func (t *Transport) Start(ctx context.Context, host coretransport.Host) error {
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
+	commands := make(chan plugin.Command, commandQueueCapacity)
+	commandDone := make(chan struct{})
 	t.mu.Lock()
 	t.cancel = cancel
 	t.done = make(chan struct{})
+	t.commandDone = commandDone
 	t.host = host
 	t.mu.Unlock()
 
@@ -82,7 +90,7 @@ func (t *Transport) Start(ctx context.Context, host coretransport.Host) error {
 	opts.SetOnConnectHandler(func(client pahomqtt.Client) {
 		t.logger.Info("mqtt connected")
 		t.publishStatus(entity.AvailabilityOnline)
-		t.subscribeCommands(client)
+		t.subscribeCommands(ctx, client, commands)
 		t.publishDiscoverySnapshot()
 	})
 	opts.SetConnectionLostHandler(func(client pahomqtt.Client, err error) {
@@ -99,6 +107,7 @@ func (t *Transport) Start(ctx context.Context, host coretransport.Host) error {
 
 	ready := make(chan struct{})
 	go t.eventLoop(ctx, host, ready)
+	go t.commandLoop(ctx, host, commands, commandDone)
 	<-ready
 
 	token := client.Connect()
@@ -115,6 +124,7 @@ func (t *Transport) Stop(ctx context.Context) error {
 	t.mu.Lock()
 	cancel := t.cancel
 	done := t.done
+	commandDone := t.commandDone
 	client := t.client
 	t.mu.Unlock()
 
@@ -128,11 +138,63 @@ func (t *Transport) Stop(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	if commandDone != nil {
+		select {
+		case <-commandDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if client != nil && client.IsConnected() {
 		t.publishStatus(entity.AvailabilityOffline)
 		client.Disconnect(250)
 	}
 	return nil
+}
+
+func (t *Transport) commandLoop(ctx context.Context, host coretransport.Host, commands <-chan plugin.Command, done chan<- struct{}) {
+	workers := make(map[string]chan plugin.Command)
+	var workerGroup sync.WaitGroup
+	defer func() {
+		workerGroup.Wait()
+		close(done)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case command := <-commands:
+			worker, ok := workers[command.EntityID]
+			if !ok {
+				worker = make(chan plugin.Command, entityCommandQueueCapacity)
+				workers[command.EntityID] = worker
+				workerGroup.Add(1)
+				go t.entityCommandLoop(ctx, host, command.EntityID, worker, &workerGroup)
+			}
+			select {
+			case worker <- command:
+			case <-ctx.Done():
+				return
+			default:
+				t.logger.Warn("mqtt entity command queue full; command dropped", zap.String("entity_id", command.EntityID))
+			}
+		}
+	}
+}
+
+func (t *Transport) entityCommandLoop(ctx context.Context, host coretransport.Host, entityID string, commands <-chan plugin.Command, workerGroup *sync.WaitGroup) {
+	defer workerGroup.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case command := <-commands:
+			if err := host.RouteCommand(ctx, command); err != nil {
+				t.logger.Warn("mqtt command rejected", zap.String("entity_id", entityID), zap.Error(err))
+			}
+		}
+	}
 }
 
 func (t *Transport) eventLoop(ctx context.Context, host coretransport.Host, ready chan<- struct{}) {
@@ -247,14 +309,6 @@ func formatMQTTScalar(value any) string {
 	}
 }
 
-// statePayload is kept for tests that verify envelope extraction behavior.
-func statePayload(state any) map[string]any {
-	if payload, ok := asMapStringAny(state); ok {
-		return payload
-	}
-	return map[string]any{"state": state}
-}
-
 func asMapStringAny(value any) (map[string]any, bool) {
 	if value == nil {
 		return nil, false
@@ -291,12 +345,16 @@ func (t *Transport) publishStatus(availability entity.Availability) {
 	}
 }
 
-func (t *Transport) subscribeCommands(client pahomqtt.Client) {
+func (t *Transport) subscribeCommands(ctx context.Context, client pahomqtt.Client, commands chan<- plugin.Command) {
 	topic := CommandTopic(t.cfg.TopicPrefix, "+")
 	token := client.Subscribe(topic, 1, func(client pahomqtt.Client, msg pahomqtt.Message) {
 		entityID, ok := t.commandEntityID(msg.Topic())
 		if !ok {
 			t.logger.Warn("mqtt command topic did not match expected layout", zap.String("topic", msg.Topic()))
+			return
+		}
+		if !t.isKnown(entityID) {
+			t.logger.Warn("mqtt command rejected: unknown entity", zap.String("entity_id", entityID))
 			return
 		}
 		payload, err := decodeCommandPayload(msg.Payload())
@@ -305,13 +363,17 @@ func (t *Transport) subscribeCommands(client pahomqtt.Client) {
 			return
 		}
 		command := plugin.Command{
-			EntityID:  entityID,
-			Payload:   payload,
-			Raw:       append([]byte(nil), msg.Payload()...),
-			Transport: transportID,
+			EntityID:   entityID,
+			Payload:    payload,
+			Raw:        append([]byte(nil), msg.Payload()...),
+			Transport:  transportID,
+			ReceivedAt: time.Now(),
 		}
-		if err := t.host.RouteCommand(context.Background(), command); err != nil {
-			t.logger.Warn("mqtt command rejected", zap.String("entity_id", entityID), zap.Error(err))
+		select {
+		case commands <- command:
+		case <-ctx.Done():
+		default:
+			t.logger.Warn("mqtt command queue full; command dropped", zap.String("entity_id", entityID))
 		}
 	})
 	if !token.WaitTimeout(5 * time.Second) {

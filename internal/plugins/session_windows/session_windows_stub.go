@@ -7,38 +7,31 @@ import (
 	"fmt"
 
 	"github.com/tarik02/home-pc-agent/internal/core/plugin"
+	"go.uber.org/zap"
 )
 
 const pluginID = "session_windows"
-
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
-	}
-	return &Plugin{cfg: cfg}, nil
-}
 
 type Config struct {
 	Enabled bool `mapstructure:"enabled"`
 }
 
-type Plugin struct {
-	cfg Config
+func NewFactory() plugin.Factory {
+	return plugin.ConfigFactory[Config](
+		plugin.Descriptor{
+			ID:               pluginID,
+			OperatingSystems: []string{"windows"},
+			EntityIDs:        []string{"session.lock", "session.sleep"},
+		},
+		nil,
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{cfg: cfg}
+		},
+	)
 }
 
-func (p *Plugin) ID() string {
-	return pluginID
+type Plugin struct {
+	cfg Config
 }
 
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {

@@ -13,7 +13,6 @@ func TestParamValueIsCaseInsensitive(t *testing.T) {
 }
 
 func TestMapGetterToOptionNameResolution(t *testing.T) {
-	p := &Plugin{}
 	action := ActionConfig{Kind: kindSelect}
 	options := map[string]OptionConfig{
 		"res_4k": {
@@ -22,13 +21,12 @@ func TestMapGetterToOptionNameResolution(t *testing.T) {
 		},
 	}
 
-	name, err := p.mapGetterToOptionName(action, options, "3840x2160")
+	name, err := mapGetterToOptionName(action, options, "3840x2160")
 	require.NoError(t, err)
 	require.Equal(t, "3840x2160", name)
 }
 
 func TestMapGetterToOptionNameScale(t *testing.T) {
-	p := &Plugin{}
 	action := ActionConfig{Kind: kindSelect}
 	options := map[string]OptionConfig{
 		"scale_175": {
@@ -37,13 +35,12 @@ func TestMapGetterToOptionNameScale(t *testing.T) {
 		},
 	}
 
-	name, err := p.mapGetterToOptionName(action, options, "175")
+	name, err := mapGetterToOptionName(action, options, "175")
 	require.NoError(t, err)
 	require.Equal(t, "175%", name)
 }
 
 func TestMapGetterToOptionNameScaleLowercaseParams(t *testing.T) {
-	p := &Plugin{}
 	action := ActionConfig{Kind: kindSelect}
 	options := map[string]OptionConfig{
 		"scale_100": {
@@ -52,13 +49,12 @@ func TestMapGetterToOptionNameScaleLowercaseParams(t *testing.T) {
 		},
 	}
 
-	name, err := p.mapGetterToOptionName(action, options, "100")
+	name, err := mapGetterToOptionName(action, options, "100")
 	require.NoError(t, err)
 	require.Equal(t, "100%", name)
 }
 
 func TestMapGetterToOptionNameRefresh240016(t *testing.T) {
-	p := &Plugin{}
 	action := ActionConfig{Kind: kindSelect}
 	options := map[string]OptionConfig{
 		"refresh_240": {
@@ -67,7 +63,7 @@ func TestMapGetterToOptionNameRefresh240016(t *testing.T) {
 		},
 	}
 
-	name, err := p.mapGetterToOptionName(action, options, "240.016")
+	name, err := mapGetterToOptionName(action, options, "240.016")
 	require.NoError(t, err)
 	require.Equal(t, "240 Hz", name)
 }

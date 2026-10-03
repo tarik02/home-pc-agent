@@ -53,41 +53,41 @@ func NewPluginScope(parent context.Context, pluginID string, registry *EntityReg
 	}
 }
 
-func (s *PluginScope) RegisterEntity(e entity.Entity) (plugin.EntityHandle, error) {
+func (s *PluginScope) RegisterEntity(e entity.Entity) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("plugin %q scope is closed", s.pluginID)
+		return fmt.Errorf("plugin %q scope is closed", s.pluginID)
 	}
-	s.mu.Unlock()
 
 	if err := s.registry.Register(e); err != nil {
-		return nil, err
+		return err
 	}
 
-	s.mu.Lock()
 	s.entityIDs[e.ID] = struct{}{}
-	s.mu.Unlock()
 
-	return &entityHandle{scope: s, id: e.ID}, nil
+	return nil
 }
 
 func (s *PluginScope) UpdateEntity(e entity.Entity) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
 		return fmt.Errorf("plugin %q scope is closed", s.pluginID)
 	}
-	s.mu.Unlock()
-
-	if !s.ownsEntity(e.ID) {
+	if _, ok := s.entityIDs[e.ID]; !ok {
 		return fmt.Errorf("plugin %q cannot update unowned entity %q", s.pluginID, e.ID)
 	}
 	return s.registry.Update(e)
 }
 
 func (s *PluginScope) PublishState(entityID string, state any) error {
-	if !s.ownsEntity(entityID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("plugin %q scope is closed", s.pluginID)
+	}
+	if _, ok := s.entityIDs[entityID]; !ok {
 		return fmt.Errorf("plugin %q cannot publish state for unowned entity %q", s.pluginID, entityID)
 	}
 	s.bus.Publish(events.Event{Type: events.StateChanged, EntityID: entityID, State: state})
@@ -95,7 +95,12 @@ func (s *PluginScope) PublishState(entityID string, state any) error {
 }
 
 func (s *PluginScope) SetAvailability(entityID string, availability entity.Availability) error {
-	if !s.ownsEntity(entityID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("plugin %q scope is closed", s.pluginID)
+	}
+	if _, ok := s.entityIDs[entityID]; !ok {
 		return fmt.Errorf("plugin %q cannot publish availability for unowned entity %q", s.pluginID, entityID)
 	}
 	s.bus.Publish(events.Event{Type: events.AvailabilityChanged, EntityID: entityID, Availability: availability})
@@ -103,7 +108,12 @@ func (s *PluginScope) SetAvailability(entityID string, availability entity.Avail
 }
 
 func (s *PluginScope) SubscribeCommand(entityID string, handler plugin.CommandHandler) error {
-	if !s.ownsEntity(entityID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("plugin %q scope is closed", s.pluginID)
+	}
+	if _, ok := s.entityIDs[entityID]; !ok {
 		return fmt.Errorf("plugin %q cannot subscribe command for unowned entity %q", s.pluginID, entityID)
 	}
 	unsub, err := s.router.Subscribe(entityID, handler)
@@ -111,14 +121,7 @@ func (s *PluginScope) SubscribeCommand(entityID string, handler plugin.CommandHa
 		return err
 	}
 
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		unsub()
-		return fmt.Errorf("plugin %q scope is closed", s.pluginID)
-	}
 	s.unsubs[entityID] = append(s.unsubs[entityID], unsub)
-	s.mu.Unlock()
 	return nil
 }
 
@@ -128,11 +131,10 @@ func (s *PluginScope) Go(name string, fn func(ctx context.Context) error) {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
 		return
 	}
-	s.mu.Unlock()
 
 	s.group.Go(func() (err error) {
 		logger := s.logger.With(zap.String("task", name))
@@ -151,14 +153,6 @@ func (s *PluginScope) Go(name string, fn func(ctx context.Context) error) {
 		}
 		return nil
 	})
-}
-
-func (s *PluginScope) Logger() *zap.Logger {
-	return s.logger
-}
-
-func (s *PluginScope) Bus() events.Bus {
-	return s.bus
 }
 
 func (s *PluginScope) Close(ctx context.Context) error {
@@ -206,44 +200,4 @@ func (s *PluginScope) Close(ctx context.Context) error {
 	case <-time.After(30 * time.Second):
 		return fmt.Errorf("plugin %q scope cleanup timed out", s.pluginID)
 	}
-}
-
-func (s *PluginScope) unregisterEntity(ctx context.Context, id string) error {
-	s.mu.Lock()
-	if _, ok := s.entityIDs[id]; !ok {
-		s.mu.Unlock()
-		return nil
-	}
-	delete(s.entityIDs, id)
-	unsubs := append([]func(){}, s.unsubs[id]...)
-	delete(s.unsubs, id)
-	s.mu.Unlock()
-
-	for _, unsub := range unsubs {
-		unsub()
-	}
-	return s.registry.Remove(id)
-}
-
-func (s *PluginScope) ownsEntity(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return false
-	}
-	_, ok := s.entityIDs[id]
-	return ok
-}
-
-type entityHandle struct {
-	scope *PluginScope
-	id    string
-}
-
-func (h *entityHandle) ID() string {
-	return h.id
-}
-
-func (h *entityHandle) Unregister(ctx context.Context) error {
-	return h.scope.unregisterEntity(ctx, h.id)
 }

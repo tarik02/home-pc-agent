@@ -10,6 +10,7 @@ Linux only.
 
 - `session.lock` — `loginctl lock-session`
 - `session.sleep` — `systemctl suspend`
+- `session.locked` — current graphical session lock state, refreshed every 10 seconds
 
 ## Configuration
 

@@ -61,8 +61,7 @@ func TestPluginScopeCleanup(t *testing.T) {
 	router := NewCommandRouter()
 	scope := NewPluginScope(context.Background(), "test", registry, router, bus, zap.NewNop())
 
-	_, err := scope.RegisterEntity(entity.Entity{ID: "test.button", Name: "Test Button", Kind: entity.KindButton})
-	require.NoError(t, err)
+	require.NoError(t, scope.RegisterEntity(entity.Entity{ID: "test.button", Name: "Test Button", Kind: entity.KindButton}))
 	require.NoError(t, scope.SubscribeCommand("test.button", func(ctx context.Context, command plugin.Command) error {
 		return nil
 	}))
@@ -89,25 +88,6 @@ func TestPluginScopeCleanup(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("plugin goroutine was not cancelled")
 	}
-}
-
-func TestEntityHandleUnregisterRemovesCommandHandler(t *testing.T) {
-	bus := events.NewBus()
-	registry := NewEntityRegistry(bus)
-	router := NewCommandRouter()
-	scope := NewPluginScope(context.Background(), "test", registry, router, bus, zap.NewNop())
-
-	handle, err := scope.RegisterEntity(entity.Entity{ID: "test.button", Name: "Test Button", Kind: entity.KindButton})
-	require.NoError(t, err)
-	require.NoError(t, scope.SubscribeCommand("test.button", func(ctx context.Context, command plugin.Command) error {
-		return nil
-	}))
-	require.NoError(t, router.Route(context.Background(), plugin.Command{EntityID: "test.button"}))
-
-	require.NoError(t, handle.Unregister(context.Background()))
-	require.False(t, registry.Has("test.button"))
-	require.ErrorIs(t, router.Route(context.Background(), plugin.Command{EntityID: "test.button"}), ErrNoCommandHandler)
-	require.NoError(t, scope.Close(context.Background()))
 }
 
 func TestPluginScopeReportsTaskErrors(t *testing.T) {

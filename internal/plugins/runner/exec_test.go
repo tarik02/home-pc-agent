@@ -20,7 +20,7 @@ func TestRunCommandCapturesOutput(t *testing.T) {
 		Interpreter: interpreterPwsh,
 		Path:        script,
 		Delivery:    deliveryArgs,
-		Output:      OutputConfig{Capture: true, MaxBytes: 1024},
+		Output:      OutputConfig{MaxBytes: 1024},
 	})
 	require.NoError(t, err)
 	require.Equal(t, 0, result.ExitCode)
@@ -42,7 +42,7 @@ Write-Output $Mode
 		Path:        script,
 		Delivery:    deliveryArgs,
 		Params:      map[string]any{"Mode": "gaming-chair"},
-		Output:      OutputConfig{Capture: true, MaxBytes: 1024},
+		Output:      OutputConfig{MaxBytes: 1024},
 	})
 	require.NoError(t, err)
 	require.Equal(t, 0, result.ExitCode)

@@ -41,6 +41,7 @@ func runCommand(ctx context.Context, spec CommandSpec) (RunResult, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 5 * time.Second
 	configureCommand(cmd)
 	if stdin != nil {
 		cmd.Stdin = stdin
@@ -73,12 +74,7 @@ func runCommand(ctx context.Context, spec CommandSpec) (RunResult, error) {
 		}
 	}
 
-	if spec.Output.Capture {
-		result.Stdout, result.Stderr, result.Truncated = truncateOutput(result.Stdout, result.Stderr, spec.Output.MaxBytes)
-	} else {
-		result.Stdout = ""
-		result.Stderr = ""
-	}
+	result.Stdout, result.Stderr, result.Truncated = truncateOutput(result.Stdout, result.Stderr, spec.Output.MaxBytes)
 	return result, nil
 }
 

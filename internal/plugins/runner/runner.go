@@ -9,41 +9,51 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/tarik02/home-pc-agent/internal/config"
 	"github.com/tarik02/home-pc-agent/internal/core/entity"
 	"github.com/tarik02/home-pc-agent/internal/core/plugin"
 )
 
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
+func NewFactory() plugin.Factory {
+	factory := plugin.ConfigFactory[Config](
+		plugin.Descriptor{ID: pluginID},
+		func(cfg Config) (Config, error) {
+			cfg = cfg.WithDefaults()
+			if cfg.Enabled {
+				if err := cfg.Validate(); err != nil {
+					return Config{}, err
+				}
+			}
+			return cfg, nil
+		},
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{
+				cfg:      cfg,
+				logger:   logger,
+				runtimes: make(map[string]*actionRuntime, len(cfg.Actions)),
+			}
+		},
+	)
+	factory.ConfiguredEntityIDs = func(raw map[string]any) ([]string, error) {
+		var cfg Config
+		if err := config.DecodePlugin(raw, &cfg); err != nil {
+			return nil, err
+		}
+		entityIDs := make([]string, 0, len(cfg.Actions))
+		for key, action := range cfg.Actions {
+			entityIDs = append(entityIDs, action.resolvedEntityID(key))
+		}
+		sort.Strings(entityIDs)
+		return entityIDs, nil
 	}
-	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return &Plugin{
-		cfg:      cfg,
-		logger:   ctx.Logger(),
-		runtimes: make(map[string]*actionRuntime, len(cfg.Actions)),
-	}, nil
+	return factory
 }
 
 type actionRuntime struct {
 	action            ActionConfig
 	actionKey         string
 	entityID          string
-	lastSuccess       any
+	mu                sync.RWMutex
 	discoveredOptions map[string]OptionConfig
 }
 
@@ -52,12 +62,8 @@ type Plugin struct {
 	host   plugin.PluginHost
 	logger *zap.Logger
 
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	runtimes map[string]*actionRuntime
-}
-
-func (p *Plugin) ID() string {
-	return pluginID
 }
 
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
@@ -105,7 +111,7 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 		if err != nil {
 			return err
 		}
-		if _, err := host.RegisterEntity(ent); err != nil {
+		if err := host.RegisterEntity(ent); err != nil {
 			return err
 		}
 		entityID := runtime.entityID
@@ -121,10 +127,12 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 			p.logger.Warn("runner initial state publish failed", zap.String("entity_id", entityID), zap.Error(err))
 		}
 		if action.usesGetterRefresh() {
-			p.startGetterRefresh(ctx, runtime)
+			p.startGetterRefresh(runtime)
+		}
+		if action.hasOptionsGetter() && action.OptionsGetter.Refresh > 0 {
+			p.startOptionsRefresh(runtime)
 		}
 	}
-	p.scheduleStartupGetterRefresh(ctx)
 	return nil
 }
 
@@ -154,10 +162,6 @@ func (p *Plugin) buildEntity(runtime *actionRuntime) (entity.Entity, error) {
 	return ent, nil
 }
 
-func (p *Plugin) selectOptions(runtime *actionRuntime) []entity.Option {
-	return optionNamesFromMap(runtime.optionMap())
-}
-
 func (p *Plugin) publishInitialState(ctx context.Context, runtime *actionRuntime) error {
 	if runtime.action.State.Source == stateGetter {
 		value, err := p.runGetter(ctx, runtime)
@@ -165,27 +169,12 @@ func (p *Plugin) publishInitialState(ctx context.Context, runtime *actionRuntime
 			p.logger.Warn("runner getter failed during startup", zap.String("entity_id", runtime.entityID), zap.Error(err))
 			return p.host.PublishState(runtime.entityID, initialEnvelope(runtime.action))
 		}
-		p.setLastSuccess(runtime.entityID, value)
 		return p.host.PublishState(runtime.entityID, StateEnvelope{"state": formatHAState(runtime.action.Kind, value)})
 	}
 	return p.host.PublishState(runtime.entityID, initialEnvelope(runtime.action))
 }
 
-func (p *Plugin) scheduleStartupGetterRefresh(ctx context.Context) {
-	p.host.Go("runner-startup-getter-refresh", func(loopCtx context.Context) error {
-		for _, delay := range []time.Duration{3 * time.Second, 15 * time.Second} {
-			select {
-			case <-loopCtx.Done():
-				return nil
-			case <-time.After(delay):
-			}
-			p.refreshAllGetterStates(loopCtx)
-		}
-		return nil
-	})
-}
-
-func (p *Plugin) startGetterRefresh(ctx context.Context, runtime *actionRuntime) {
+func (p *Plugin) startGetterRefresh(runtime *actionRuntime) {
 	refresh := runtime.action.Getter.Refresh
 	entityID := runtime.entityID
 	p.host.Go(fmt.Sprintf("getter-%s", entityID), func(loopCtx context.Context) error {
@@ -198,6 +187,25 @@ func (p *Plugin) startGetterRefresh(ctx context.Context, runtime *actionRuntime)
 			case <-ticker.C:
 				if err := p.refreshGetterState(loopCtx, runtime); err != nil {
 					p.logger.Debug("runner getter refresh failed", zap.String("entity_id", entityID), zap.Error(err))
+				}
+			}
+		}
+	})
+}
+
+func (p *Plugin) startOptionsRefresh(runtime *actionRuntime) {
+	refresh := runtime.action.OptionsGetter.Refresh
+	entityID := runtime.entityID
+	p.host.Go(fmt.Sprintf("options-%s", entityID), func(loopCtx context.Context) error {
+		ticker := time.NewTicker(refresh)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return nil
+			case <-ticker.C:
+				if err := p.refreshDiscoveredOptions(loopCtx, runtime); err != nil {
+					p.logger.Debug("runner options refresh failed", zap.String("entity_id", entityID), zap.Error(err))
 				}
 			}
 		}
@@ -249,9 +257,6 @@ func (p *Plugin) handleCommand(ctx context.Context, entityID string, command plu
 	stateValue, err := p.resolveStateAfterRun(ctx, runtime, successState, result)
 	if err != nil {
 		return err
-	}
-	if runtime.action.State.Source == stateLastSuccess || runtime.action.State.AfterSet == afterSetLast {
-		p.setLastSuccess(entityID, successState)
 	}
 	if err := p.host.PublishState(entityID, newStateEnvelope(runtime.action.Kind, stateValue, result)); err != nil {
 		return err
@@ -314,15 +319,17 @@ func (p *Plugin) resolveButtonParams(action ActionConfig, command plugin.Command
 
 func (p *Plugin) resolveSelectParams(runtime *actionRuntime, command plugin.Command) (map[string]any, any, error) {
 	action := runtime.action
+	options := runtime.optionMap()
+	optionList := optionNamesFromMap(options)
 	value, ok := command.Payload.(string)
 	if !ok || value == "" {
 		return nil, nil, fmt.Errorf("select command payload must be a string option")
 	}
-	optionKey, ok := entity.OptionValue(p.selectOptions(runtime), value)
+	optionKey, ok := entity.OptionValue(optionList, value)
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown select option %q", value)
 	}
-	option, ok := runtime.optionMap()[optionKey]
+	option, ok := options[optionKey]
 	if !ok {
 		return nil, nil, fmt.Errorf("select option %q is no longer configured", optionKey)
 	}
@@ -332,7 +339,7 @@ func (p *Plugin) resolveSelectParams(runtime *actionRuntime, command plugin.Comm
 			return nil, nil, err
 		}
 	}
-	display := entity.OptionName(p.selectOptions(runtime), optionKey)
+	display := entity.OptionName(optionList, optionKey)
 	return params, display, nil
 }
 
@@ -412,7 +419,7 @@ func (p *Plugin) runGetter(ctx context.Context, runtime *actionRuntime) (any, er
 		StaticArgs:  action.Getter.StaticArgs,
 		Delivery:    deliveryArgs,
 		Params:      map[string]any{},
-		Output:      OutputConfig{Capture: true, MaxBytes: action.Output.MaxBytes},
+		Output:      OutputConfig{MaxBytes: action.Output.MaxBytes},
 	})
 	if err != nil {
 		return nil, err
@@ -428,21 +435,13 @@ func (p *Plugin) runGetter(ctx context.Context, runtime *actionRuntime) (any, er
 		return normalizeSwitchState(value)
 	}
 	if action.Kind == kindSelect {
-		return p.mapGetterToOptionName(action, runtime.optionMap(), fmt.Sprint(value))
+		return mapGetterToOptionName(action, runtime.optionMap(), fmt.Sprint(value))
 	}
 	return value, nil
 }
 
 func (p *Plugin) runtimeFor(entityID string) *actionRuntime {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.runtimes[entityID]
-}
-
-func (p *Plugin) setLastSuccess(entityID string, value any) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if runtime, ok := p.runtimes[entityID]; ok {
-		runtime.lastSuccess = value
-	}
 }
