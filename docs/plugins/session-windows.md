@@ -10,6 +10,7 @@ Windows only.
 
 - `session.lock` — lock the workstation with `LockWorkStation`
 - `session.sleep` — suspend with `SetSuspendState`
+- `session.locked` — active Windows session lock state, refreshed every 10 seconds
 
 ## Configuration
 

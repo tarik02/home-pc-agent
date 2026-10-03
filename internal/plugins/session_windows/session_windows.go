@@ -5,6 +5,7 @@ package session_windows
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -13,7 +14,11 @@ import (
 	win "github.com/tarik02/home-pc-agent/internal/windows"
 )
 
-const pluginID = "session_windows"
+const (
+	pluginID         = "session_windows"
+	lockPollInterval = 10 * time.Second
+	lockStateID      = "session.locked"
+)
 
 type Factory struct{}
 
@@ -65,6 +70,27 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 		}
 		_ = host.SetAvailability(button.ID, entity.AvailabilityOnline)
 	}
+	lockState := entity.Entity{
+		ID:   lockStateID,
+		Name: "Session Locked",
+		Kind: entity.KindBinarySensor,
+	}
+	if _, err := host.RegisterEntity(lockState); err != nil {
+		return err
+	}
+	p.refreshLockState()
+	host.Go("session-lock-state", func(loopCtx context.Context) error {
+		ticker := time.NewTicker(lockPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return nil
+			case <-ticker.C:
+				p.refreshLockState()
+			}
+		}
+	})
 	return nil
 }
 
@@ -81,4 +107,15 @@ func (p *Plugin) handleButton(ctx context.Context, id string) error {
 	default:
 		return fmt.Errorf("unknown session button %q", id)
 	}
+}
+
+func (p *Plugin) refreshLockState() {
+	locked, err := win.WorkstationLocked()
+	if err != nil {
+		_ = p.host.SetAvailability(lockStateID, entity.AvailabilityUnavailable)
+		p.logger.Debug("session lock state unavailable", zap.Error(err))
+		return
+	}
+	_ = p.host.SetAvailability(lockStateID, entity.AvailabilityOnline)
+	_ = p.host.PublishState(lockStateID, locked)
 }
