@@ -34,11 +34,11 @@ type Bus interface {
 
 type EventBus struct {
 	mu   sync.RWMutex
-	subs map[chan Event]struct{}
+	subs map[*subscription]struct{}
 }
 
 func NewBus() *EventBus {
-	return &EventBus{subs: make(map[chan Event]struct{})}
+	return &EventBus{subs: make(map[*subscription]struct{})}
 }
 
 func (b *EventBus) Publish(event Event) {
@@ -47,17 +47,9 @@ func (b *EventBus) Publish(event Event) {
 	}
 
 	b.mu.RLock()
-	subs := make([]chan Event, 0, len(b.subs))
-	for ch := range b.subs {
-		subs = append(subs, ch)
-	}
-	b.mu.RUnlock()
-
-	for _, ch := range subs {
-		select {
-		case ch <- event:
-		default:
-		}
+	defer b.mu.RUnlock()
+	for sub := range b.subs {
+		sub.enqueue(event)
 	}
 }
 
@@ -66,18 +58,100 @@ func (b *EventBus) Subscribe(ctx context.Context, buffer int) <-chan Event {
 		buffer = 1
 	}
 
-	ch := make(chan Event, buffer)
+	sub := newSubscription(buffer)
 	b.mu.Lock()
-	b.subs[ch] = struct{}{}
+	b.subs[sub] = struct{}{}
 	b.mu.Unlock()
+	go sub.run()
 
 	go func() {
 		<-ctx.Done()
 		b.mu.Lock()
-		delete(b.subs, ch)
-		close(ch)
+		delete(b.subs, sub)
+		sub.close()
 		b.mu.Unlock()
 	}()
 
-	return ch
+	return sub.events
+}
+
+type subscription struct {
+	events chan Event
+	ready  chan struct{}
+	done   chan struct{}
+
+	mu        sync.Mutex
+	queue     []Event
+	closed    bool
+	closeOnce sync.Once
+}
+
+func newSubscription(buffer int) *subscription {
+	return &subscription{
+		events: make(chan Event, buffer),
+		ready:  make(chan struct{}, 1),
+		done:   make(chan struct{}),
+	}
+}
+
+func (s *subscription) enqueue(event Event) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.queue = append(s.queue, event)
+	s.mu.Unlock()
+
+	select {
+	case s.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (s *subscription) close() {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.queue = nil
+		s.mu.Unlock()
+		close(s.done)
+	})
+}
+
+func (s *subscription) run() {
+	defer close(s.events)
+	for {
+		event, ok := s.next()
+		if !ok {
+			select {
+			case <-s.done:
+				return
+			case <-s.ready:
+				continue
+			}
+		}
+
+		select {
+		case <-s.done:
+			return
+		case s.events <- event:
+		}
+	}
+}
+
+func (s *subscription) next() (Event, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.queue) == 0 {
+		return Event{}, false
+	}
+	event := s.queue[0]
+	if len(s.queue) == 1 {
+		s.queue = nil
+		return event, true
+	}
+	s.queue[0] = Event{}
+	s.queue = s.queue[1:]
+	return event, true
 }

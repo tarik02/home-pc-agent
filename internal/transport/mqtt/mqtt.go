@@ -153,10 +153,10 @@ func (t *Transport) Stop(ctx context.Context) error {
 }
 
 func (t *Transport) commandLoop(ctx context.Context, host coretransport.Host, commands <-chan plugin.Command, done chan<- struct{}) {
-	queues := make(map[string]chan plugin.Command)
-	var workers sync.WaitGroup
+	workers := make(map[string]chan plugin.Command)
+	var workerGroup sync.WaitGroup
 	defer func() {
-		workers.Wait()
+		workerGroup.Wait()
 		close(done)
 	}()
 
@@ -165,31 +165,33 @@ func (t *Transport) commandLoop(ctx context.Context, host coretransport.Host, co
 		case <-ctx.Done():
 			return
 		case command := <-commands:
-			queue := queues[command.EntityID]
-			if queue == nil {
-				queue = make(chan plugin.Command, entityCommandQueueCapacity)
-				queues[command.EntityID] = queue
-				workers.Add(1)
-				go func(entityCommands <-chan plugin.Command) {
-					defer workers.Done()
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case entityCommand := <-entityCommands:
-							if err := host.RouteCommand(ctx, entityCommand); err != nil {
-								t.logger.Warn("mqtt command rejected", zap.String("entity_id", entityCommand.EntityID), zap.Error(err))
-							}
-						}
-					}
-				}(queue)
+			worker, ok := workers[command.EntityID]
+			if !ok {
+				worker = make(chan plugin.Command, entityCommandQueueCapacity)
+				workers[command.EntityID] = worker
+				workerGroup.Add(1)
+				go t.entityCommandLoop(ctx, host, command.EntityID, worker, &workerGroup)
 			}
 			select {
-			case queue <- command:
+			case worker <- command:
 			case <-ctx.Done():
 				return
 			default:
 				t.logger.Warn("mqtt entity command queue full; command dropped", zap.String("entity_id", command.EntityID))
+			}
+		}
+	}
+}
+
+func (t *Transport) entityCommandLoop(ctx context.Context, host coretransport.Host, entityID string, commands <-chan plugin.Command, workerGroup *sync.WaitGroup) {
+	defer workerGroup.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case command := <-commands:
+			if err := host.RouteCommand(ctx, command); err != nil {
+				t.logger.Warn("mqtt command rejected", zap.String("entity_id", entityID), zap.Error(err))
 			}
 		}
 	}
@@ -305,14 +307,6 @@ func formatMQTTScalar(value any) string {
 	default:
 		return fmt.Sprint(value)
 	}
-}
-
-// statePayload is kept for tests that verify envelope extraction behavior.
-func statePayload(state any) map[string]any {
-	if payload, ok := asMapStringAny(state); ok {
-		return payload
-	}
-	return map[string]any{"state": state}
 }
 
 func asMapStringAny(value any) (map[string]any, bool) {

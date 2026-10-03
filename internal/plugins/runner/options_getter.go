@@ -21,10 +21,12 @@ func (a ActionConfig) hasOptionsGetter() bool {
 }
 
 func (r *actionRuntime) optionMap() map[string]OptionConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if len(r.discoveredOptions) > 0 {
-		return r.discoveredOptions
+		return cloneOptions(r.discoveredOptions)
 	}
-	return r.action.Options
+	return cloneOptions(r.action.Options)
 }
 
 func (p *Plugin) discoverOptions(ctx context.Context, runtime *actionRuntime) error {
@@ -45,7 +47,9 @@ func (p *Plugin) discoverOptions(ctx context.Context, runtime *actionRuntime) er
 			lastErr = err
 			continue
 		}
-		runtime.discoveredOptions = opts
+		runtime.mu.Lock()
+		runtime.discoveredOptions = cloneOptions(opts)
+		runtime.mu.Unlock()
 		return nil
 	}
 	if len(runtime.action.Options) > 0 {
@@ -63,10 +67,13 @@ func (p *Plugin) refreshDiscoveredOptions(ctx context.Context, runtime *actionRu
 	if err != nil {
 		return err
 	}
+	runtime.mu.Lock()
 	if optionsEqual(runtime.discoveredOptions, opts) {
+		runtime.mu.Unlock()
 		return nil
 	}
-	runtime.discoveredOptions = opts
+	runtime.discoveredOptions = cloneOptions(opts)
+	runtime.mu.Unlock()
 	ent, err := p.buildEntity(runtime)
 	if err != nil {
 		return err
@@ -91,7 +98,7 @@ func (p *Plugin) runOptionsGetter(ctx context.Context, action ActionConfig) (map
 		StaticArgs:  spec.StaticArgs,
 		Delivery:    deliveryArgs,
 		Params:      map[string]any{},
-		Output:      OutputConfig{Capture: true, MaxBytes: action.Output.MaxBytes},
+		Output:      OutputConfig{MaxBytes: action.Output.MaxBytes},
 	})
 	if err != nil {
 		return nil, err
@@ -202,6 +209,18 @@ func parametersEqual(a, b map[string]any) bool {
 		}
 	}
 	return true
+}
+
+func cloneOptions(options map[string]OptionConfig) map[string]OptionConfig {
+	if len(options) == 0 {
+		return nil
+	}
+	cloned := make(map[string]OptionConfig, len(options))
+	for key, option := range options {
+		option.Parameters = cloneParameters(option.Parameters)
+		cloned[key] = option
+	}
+	return cloned
 }
 
 func optionNamesFromMap(options map[string]OptionConfig) []entity.Option {

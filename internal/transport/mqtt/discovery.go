@@ -64,7 +64,7 @@ func DiscoveryPayload(e entity.Entity, opts DiscoveryOptions) map[string]any {
 			"identifiers":  []string{opts.AgentID},
 			"name":         opts.AgentName,
 			"manufacturer": "home-pc-agent",
-			"model":        "Windows PC control agent",
+			"model":        "PC control agent",
 		},
 	}
 

@@ -19,26 +19,22 @@ const (
 	availabilityPollInterval = 5 * time.Second
 )
 
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
-	}
-	return &Plugin{cfg: cfg, logger: ctx.Logger()}, nil
-}
-
 type Config struct {
 	Enabled bool `mapstructure:"enabled"`
+}
+
+func NewFactory() plugin.Factory {
+	return plugin.ConfigFactory[Config](
+		plugin.Descriptor{
+			ID:               pluginID,
+			OperatingSystems: []string{"linux"},
+			EntityIDs:        []string{"session.lock_inhibited", "display.dim_inhibited"},
+		},
+		nil,
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{cfg: cfg, logger: logger}
+		},
+	)
 }
 
 type inhibitor struct {
@@ -58,10 +54,6 @@ type Plugin struct {
 	conn       *dbus.Conn
 	inhibitors map[string]*inhibitor
 	mu         sync.Mutex
-}
-
-func (p *Plugin) ID() string {
-	return pluginID
 }
 
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
@@ -96,7 +88,7 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	p.inhibitors = make(map[string]*inhibitor, len(inhibitors))
 	for _, item := range inhibitors {
 		p.inhibitors[item.entity.ID] = item
-		if _, err := host.RegisterEntity(item.entity); err != nil {
+		if err := host.RegisterEntity(item.entity); err != nil {
 			return err
 		}
 		id := item.entity.ID

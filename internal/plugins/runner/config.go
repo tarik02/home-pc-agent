@@ -114,8 +114,7 @@ type GetterConfig struct {
 }
 
 type OutputConfig struct {
-	Capture  bool `mapstructure:"capture"`
-	MaxBytes int  `mapstructure:"max_bytes"`
+	MaxBytes int `mapstructure:"max_bytes"`
 }
 
 type JSONConfig struct {
@@ -194,12 +193,6 @@ func (a ActionConfig) withDefaults(cfg Config) ActionConfig {
 	}
 	if a.Output.MaxBytes == 0 {
 		a.Output.MaxBytes = 65536
-	}
-	if !a.Output.Capture {
-		a.Output.Capture = true
-	}
-	if a.EntityID == "" {
-		a.EntityID = ""
 	}
 	return a
 }

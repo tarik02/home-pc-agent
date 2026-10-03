@@ -40,15 +40,8 @@ func newStateEnvelope(kind string, state any, result RunResult) StateEnvelope {
 }
 
 func initialEnvelope(action ActionConfig) StateEnvelope {
-	switch action.State.Source {
-	case stateNone:
-		if action.Kind == kindSelect {
-			return StateEnvelope{"state": stateUnknown}
-		}
-		return StateEnvelope{"state": nil}
-	case stateLastSuccess:
-		return StateEnvelope{"state": nil}
-	default:
-		return StateEnvelope{"state": nil}
+	if action.State.Source == stateNone && action.Kind == kindSelect {
+		return StateEnvelope{"state": stateUnknown}
 	}
+	return StateEnvelope{"state": nil}
 }

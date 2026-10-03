@@ -17,6 +17,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/tarik02/home-pc-agent/internal/config"
 	"github.com/tarik02/home-pc-agent/internal/core/entity"
 	"github.com/tarik02/home-pc-agent/internal/core/plugin"
 )
@@ -34,34 +35,42 @@ var (
 	profileNameSeparator        = regexp.MustCompile(`[-_]+`)
 )
 
-type Factory struct{}
-
-func NewFactory() Factory {
-	return Factory{}
-}
-
-func (Factory) ID() string {
-	return pluginID
-}
-
-func (Factory) New(ctx plugin.PluginFactoryContext) (plugin.Plugin, error) {
-	var cfg Config
-	if err := ctx.DecodeConfig(&cfg); err != nil {
-		return nil, err
-	}
-	cfg = cfg.withDefaults()
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return &Plugin{cfg: cfg, logger: ctx.Logger()}, nil
-}
-
 type Config struct {
 	Enabled    bool               `mapstructure:"enabled"`
 	ExePath    string             `mapstructure:"exe_path"`
 	ConfigPath string             `mapstructure:"config_path"`
 	Profiles   map[string]Profile `mapstructure:"profiles"`
 	Timeout    time.Duration      `mapstructure:"timeout"`
+}
+
+func NewFactory() plugin.Factory {
+	factory := plugin.ConfigFactory[Config](
+		plugin.Descriptor{
+			ID:               pluginID,
+			OperatingSystems: []string{"windows"},
+			EntityIDs:        []string{entityID},
+		},
+		func(cfg Config) (Config, error) {
+			cfg = cfg.withDefaults()
+			if cfg.Enabled {
+				if err := cfg.Validate(); err != nil {
+					return Config{}, err
+				}
+			}
+			return cfg, nil
+		},
+		func(cfg Config, logger *zap.Logger) plugin.Plugin {
+			return &Plugin{cfg: cfg, logger: logger}
+		},
+	)
+	factory.ValidateConfigured = func(raw map[string]any) error {
+		var cfg Config
+		if err := config.DecodePlugin(raw, &cfg); err != nil {
+			return err
+		}
+		return errors.Join(ValidateConfigured(cfg)...)
+	}
+	return factory
 }
 
 type Profile struct {
@@ -108,10 +117,6 @@ type Plugin struct {
 	logger   *zap.Logger
 }
 
-func (p *Plugin) ID() string {
-	return pluginID
-}
-
 func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	p.host = host
 	profiles, err := p.resolveProfiles(ctx)
@@ -123,7 +128,7 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 	}
 	p.profiles = profiles
 	options := p.options()
-	_, err = host.RegisterEntity(entity.Entity{
+	err = host.RegisterEntity(entity.Entity{
 		ID:      entityID,
 		Name:    "FanControl Profile",
 		Kind:    entity.KindSelect,
@@ -137,7 +142,7 @@ func (p *Plugin) Start(ctx context.Context, host plugin.PluginHost) error {
 		return err
 	}
 	_ = host.SetAvailability(entityID, entity.AvailabilityOnline)
-	activeCtx, cancel := context.WithTimeout(ctx, p.timeout())
+	activeCtx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
 	defer cancel()
 	if active, err := p.activeProfile(activeCtx); err == nil && active != "" {
 		_ = host.PublishState(entityID, entity.OptionName(options, active))
@@ -161,7 +166,7 @@ func (p *Plugin) handleCommand(ctx context.Context, command plugin.Command) erro
 		return fmt.Errorf("unknown FanControl profile %q", value)
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, p.timeout())
+	cmdCtx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
 	defer cancel()
 
 	if err := p.switchProfile(cmdCtx, profileID); err != nil {
@@ -190,7 +195,9 @@ func (p *Plugin) switchProfile(ctx context.Context, profileID string) error {
 	if configName != "" {
 		conn, err := openFanControlIPC(ctx)
 		if err == nil {
-			defer conn.Close()
+			defer func() {
+				_ = conn.Close()
+			}()
 			rpc := newFanControlRPC(conn)
 			if err := rpc.LoadConfig(ctx, configName); err != nil {
 				return fmt.Errorf("switch FanControl profile through IPC: %w", err)
@@ -217,7 +224,9 @@ func (p *Plugin) switchProfile(ctx context.Context, profileID string) error {
 func (p *Plugin) activeProfile(ctx context.Context) (string, error) {
 	conn, err := openFanControlIPC(ctx)
 	if err == nil {
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close()
+		}()
 		rpc := newFanControlRPC(conn)
 		configs, err := rpc.ListConfigs(ctx)
 		if err != nil {
@@ -278,7 +287,9 @@ func (p *Plugin) resolveProfiles(ctx context.Context) (map[string]Profile, error
 func (p *Plugin) listConfigsWithStartup(ctx context.Context) (fanControlConfigs, error) {
 	conn, err := openFanControlIPC(ctx)
 	if err == nil {
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close()
+		}()
 		return newFanControlRPC(conn).ListConfigs(ctx)
 	}
 	if !errors.Is(err, errFanControlIPCUnavailable) {
@@ -298,7 +309,9 @@ func (p *Plugin) startFanControlAndLoad(ctx context.Context, configName string) 
 	if err != nil {
 		return fmt.Errorf("wait for FanControl IPC: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	rpc := newFanControlRPC(conn)
 	if err := rpc.LoadConfig(ctx, configName); err != nil {
 		return fmt.Errorf("switch FanControl profile through IPC after start: %w", err)
@@ -322,7 +335,9 @@ func (p *Plugin) waitForConfigs(ctx context.Context) (fanControlConfigs, error) 
 	if err != nil {
 		return fanControlConfigs{}, err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	return newFanControlRPC(conn).ListConfigs(ctx)
 }
 
@@ -518,19 +533,14 @@ func (p *Plugin) profileByConfigName(configName string) string {
 	return profileKeyByConfigName(p.profiles, filepath.Base(configName))
 }
 
-func (p *Plugin) timeout() time.Duration {
-	if p.cfg.Timeout != 0 {
-		return p.cfg.Timeout
-	}
-	return 20 * time.Second
-}
-
 func fileSHA256(path string) ([32]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return [32]byte{}, err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {

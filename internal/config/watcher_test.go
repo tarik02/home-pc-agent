@@ -22,7 +22,9 @@ func TestWatcherNotifiesOnWrite(t *testing.T) {
 		}
 	})
 	require.NoError(t, err)
-	defer watcher.Close()
+	defer func() {
+		require.NoError(t, watcher.Close())
+	}()
 
 	require.NoError(t, os.WriteFile(path, []byte("enabled = false\n"), 0o600))
 
