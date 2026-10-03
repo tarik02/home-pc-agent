@@ -53,6 +53,17 @@ func TestDiscoveryPayloadForButton(t *testing.T) {
 	require.NotContains(t, payload, "state_topic")
 }
 
+func TestDiscoveryPayloadForBinarySensor(t *testing.T) {
+	e := entity.Entity{ID: "session.locked", Name: "Session Locked", Kind: entity.KindBinarySensor}
+	opts := DiscoveryOptions{AgentID: "desktop-pc", AgentName: "Desktop PC", TopicPrefix: "pc/desktop"}
+
+	payload := DiscoveryPayload(e, opts)
+	require.Equal(t, "pc/desktop/state/session.locked", payload["state_topic"])
+	require.Equal(t, "true", payload["payload_on"])
+	require.Equal(t, "false", payload["payload_off"])
+	require.NotContains(t, payload, "command_topic")
+}
+
 func TestDecodeCommandPayload(t *testing.T) {
 	payload, err := decodeCommandPayload([]byte(`{"value":"Gaming"}`))
 	require.NoError(t, err)

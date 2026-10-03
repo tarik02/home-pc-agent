@@ -10,6 +10,10 @@ func LockWorkStation() error {
 	return ErrUnsupported
 }
 
+func WorkstationLocked() (bool, error) {
+	return false, ErrUnsupported
+}
+
 func Sleep() error {
 	return ErrUnsupported
 }
