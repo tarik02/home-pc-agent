@@ -21,7 +21,9 @@ const (
 	entityID = "powerprofile.profile"
 )
 
-var profileLinePattern = regexp.MustCompile(`^\s*\*?\s*(\S+):`)
+// Matches profile headers such as "* power-saver:" but not the indented
+// "CpuDriver:\tamd_pstate" detail lines, which always carry a value.
+var profileLinePattern = regexp.MustCompile(`^\s*\*?\s*(\S+):\s*$`)
 
 type Config struct {
 	Enabled bool          `mapstructure:"enabled"`
