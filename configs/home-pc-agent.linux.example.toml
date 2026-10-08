@@ -20,7 +20,7 @@ enabled = true
 [plugins.inhibit_freedesktop]
 enabled = true
 
-[plugins.powerprofile_powerprofilesctl]
+[plugins.powerprofile_ppd]
 enabled = true
 timeout = "10s"
 

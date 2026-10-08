@@ -15,7 +15,7 @@ import (
 	"github.com/tarik02/home-pc-agent/internal/plugins/fancontrol"
 	"github.com/tarik02/home-pc-agent/internal/plugins/inhibit_freedesktop"
 	"github.com/tarik02/home-pc-agent/internal/plugins/powerplan"
-	"github.com/tarik02/home-pc-agent/internal/plugins/powerprofile_powerprofilesctl"
+	"github.com/tarik02/home-pc-agent/internal/plugins/powerprofile_ppd"
 	"github.com/tarik02/home-pc-agent/internal/plugins/runner"
 	"github.com/tarik02/home-pc-agent/internal/plugins/session_loginctl"
 	"github.com/tarik02/home-pc-agent/internal/plugins/session_windows"
@@ -29,7 +29,7 @@ func Builtin() []plugin.Factory {
 		display_kscreen.NewFactory(),
 		inhibit_freedesktop.NewFactory(),
 		powerplan.NewFactory(),
-		powerprofile_powerprofilesctl.NewFactory(),
+		powerprofile_ppd.NewFactory(),
 		fancontrol.NewFactory(),
 		runner.NewFactory(),
 	}
