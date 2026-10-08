@@ -76,7 +76,7 @@ Provider plugins use the `<capability>_<provider>` ID format. Enable one provide
 | `display_kscreen` | Linux | `display.off` |
 | `inhibit_freedesktop` | Linux | `session.lock_inhibited`, `display.dim_inhibited` |
 | `powerplan_windows` | Windows | `powerplan.mode` |
-| `powerprofile_powerprofilesctl` | Linux | `powerprofile.profile` |
+| `powerprofile_ppd` | Linux | `powerprofile.profile` |
 | `fancontrol_windows` | Windows | `fancontrol.profile` |
 | `runner` | cross-platform | configured actions |
 
