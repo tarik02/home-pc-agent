@@ -3,6 +3,7 @@ module github.com/tarik02/home-pc-agent
 go 1.22
 
 require (
+	github.com/ebitengine/purego v0.10.0
 	github.com/eclipse/paho.mqtt.golang v1.5.0
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/go-viper/mapstructure/v2 v2.2.1

@@ -10,6 +10,7 @@ import (
 
 	"github.com/tarik02/home-pc-agent/internal/config"
 	"github.com/tarik02/home-pc-agent/internal/core/plugin"
+	"github.com/tarik02/home-pc-agent/internal/plugins/display_darwin"
 	"github.com/tarik02/home-pc-agent/internal/plugins/display_kscreen"
 	"github.com/tarik02/home-pc-agent/internal/plugins/display_windows"
 	"github.com/tarik02/home-pc-agent/internal/plugins/fancontrol"
@@ -17,6 +18,7 @@ import (
 	"github.com/tarik02/home-pc-agent/internal/plugins/powerplan"
 	"github.com/tarik02/home-pc-agent/internal/plugins/powerprofile_ppd"
 	"github.com/tarik02/home-pc-agent/internal/plugins/runner"
+	"github.com/tarik02/home-pc-agent/internal/plugins/session_darwin"
 	"github.com/tarik02/home-pc-agent/internal/plugins/session_loginctl"
 	"github.com/tarik02/home-pc-agent/internal/plugins/session_windows"
 )
@@ -25,8 +27,10 @@ func Builtin() []plugin.Factory {
 	return []plugin.Factory{
 		session_windows.NewFactory(),
 		session_loginctl.NewFactory(),
+		session_darwin.NewFactory(),
 		display_windows.NewFactory(),
 		display_kscreen.NewFactory(),
+		display_darwin.NewFactory(),
 		inhibit_freedesktop.NewFactory(),
 		powerplan.NewFactory(),
 		powerprofile_ppd.NewFactory(),

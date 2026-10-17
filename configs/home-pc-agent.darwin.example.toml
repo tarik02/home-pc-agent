@@ -1,0 +1,18 @@
+[agent]
+id = "desktop-mac"
+name = "Desktop Mac"
+data_dir = "/Users/example/Library/Application Support/home-pc-agent"
+
+[transports.mqtt]
+enabled = false
+broker = "tcp://homeassistant.local:1883"
+client_id = "home-pc-agent-desktop-mac"
+topic_prefix = "pc/desktop-mac"
+discovery_base = "homeassistant"
+connect_timeout = "5s"
+
+[plugins.session_darwin]
+enabled = true
+
+[plugins.display_darwin]
+enabled = true
