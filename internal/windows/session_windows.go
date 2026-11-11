@@ -18,7 +18,7 @@ var (
 	wtsapi32                  = syswindows.NewLazySystemDLL("wtsapi32.dll")
 	procAdjustTokenPrivileges = advapi32.NewProc("AdjustTokenPrivileges")
 	procLockWorkStation       = user32.NewProc("LockWorkStation")
-	procSendMessageW          = user32.NewProc("SendMessageW")
+	procSendMessageTimeoutW   = user32.NewProc("SendMessageTimeoutW")
 	procSetSuspendState       = powrprof.NewProc("SetSuspendState")
 	procWTSQuerySessionInfo   = wtsapi32.NewProc("WTSQuerySessionInformationW")
 )
@@ -72,7 +72,7 @@ func WorkstationLocked() (bool, error) {
 		return false, err
 	}
 
-	var buffer uintptr
+	var buffer *wtsInfoEx
 	var bytesReturned uint32
 	r1, _, queryErr := procWTSQuerySessionInfo.Call(
 		0,
@@ -84,12 +84,12 @@ func WorkstationLocked() (bool, error) {
 	if r1 == 0 {
 		return false, syscallError("WTSQuerySessionInformationW", queryErr)
 	}
-	defer syswindows.WTSFreeMemory(buffer)
+	defer syswindows.WTSFreeMemory(uintptr(unsafe.Pointer(buffer)))
 
-	if buffer == 0 || uintptr(bytesReturned) < unsafe.Sizeof(wtsInfoEx{}) {
+	if buffer == nil || uintptr(bytesReturned) < unsafe.Sizeof(wtsInfoEx{}) {
 		return false, fmt.Errorf("WTSQuerySessionInformationW returned %d bytes", bytesReturned)
 	}
-	info := (*wtsInfoEx)(unsafe.Pointer(buffer))
+	info := buffer
 	if info.Level != 1 {
 		return false, fmt.Errorf("unsupported WTS session info level %d", info.Level)
 	}
@@ -187,8 +187,14 @@ func DisplayOff() error {
 		wmSysCommand   = uintptr(0x0112)
 		scMonitorPower = uintptr(0xf170)
 		monitorOff     = uintptr(2)
+		abortIfHung    = uintptr(0x0002)
+		errorOnExit    = uintptr(0x0020)
 	)
-	procSendMessageW.Call(hwndBroadcast, wmSysCommand, scMonitorPower, monitorOff)
+	var result uintptr
+	r1, _, err := procSendMessageTimeoutW.Call(hwndBroadcast, wmSysCommand, scMonitorPower, monitorOff, abortIfHung|errorOnExit, 1000, uintptr(unsafe.Pointer(&result)))
+	if r1 == 0 {
+		return syscallError("SendMessageTimeoutW", err)
+	}
 	return nil
 }
 
