@@ -128,6 +128,21 @@ func (t *Transport) Stop(ctx context.Context) error {
 	client := t.client
 	t.mu.Unlock()
 
+	// Disconnect even if a command ignores cancellation and the drain times out.
+	// Otherwise this cancelled generation can remain online and keep reconnecting.
+	if client != nil {
+		defer client.Disconnect(250)
+		if client.IsConnected() && ctx.Err() == nil {
+			token := client.Publish(StatusTopic(t.cfg.TopicPrefix), 1, true, mustJSON(map[string]string{"availability": string(entity.AvailabilityOffline)}))
+			select {
+			case <-token.Done():
+				if err := token.Error(); err != nil {
+					t.logger.Warn("mqtt shutdown status publish failed", zap.Error(err))
+				}
+			case <-ctx.Done():
+			}
+		}
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -144,10 +159,6 @@ func (t *Transport) Stop(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-	}
-	if client != nil && client.IsConnected() {
-		t.publishStatus(entity.AvailabilityOffline)
-		client.Disconnect(250)
 	}
 	return nil
 }

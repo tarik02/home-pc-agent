@@ -27,11 +27,13 @@ type Runtime struct {
 	validateConfig  ConfigValidator
 	configWatcher   *config.Watcher
 	current         *runtimeGeneration
+	failures        chan error
 
 	mu sync.Mutex
 }
 
 type runtimeGeneration struct {
+	cfg        *config.Config
 	plugins    *PluginManager
 	transports *TransportManager
 }
@@ -44,7 +46,7 @@ func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factorie
 		logger = zap.NewNop()
 	}
 	if buildTransports == nil {
-		buildTransports = func(cfg *config.Config, logger *zap.Logger) []coretransport.Transport { return transports }
+		return nil, fmt.Errorf("buildTransports is required")
 	}
 	runtime := &Runtime{
 		cfgPath:         cfgPath,
@@ -52,6 +54,7 @@ func NewRuntime(cfgPath string, cfg *config.Config, logger *zap.Logger, factorie
 		factories:       factories,
 		buildTransports: buildTransports,
 		validateConfig:  validateConfig,
+		failures:        make(chan error, 1),
 	}
 	runtime.current = runtime.newGeneration(cfg, transports)
 	return runtime, nil
@@ -76,14 +79,18 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return err
 	}
 
-	<-ctx.Done()
+	var runtimeErr error
+	select {
+	case <-ctx.Done():
+	case runtimeErr = <-r.failures:
+	}
 	r.logger.Info("stopping runtime")
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), defaultStopTimeout)
 	defer cancel()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.current.Stop(stopCtx)
+	return errors.Join(runtimeErr, r.current.Stop(stopCtx))
 }
 
 func (r *Runtime) reloadFromDisk(ctx context.Context) {
@@ -107,7 +114,7 @@ func (r *Runtime) reloadFromDisk(ctx context.Context) {
 	stopCtx, cancel := context.WithTimeout(context.Background(), defaultStopTimeout)
 	defer cancel()
 	if err := previous.Stop(stopCtx); err != nil {
-		restoreErr := previous.Start(ctx)
+		restoreErr := r.restoreGeneration(ctx, previous)
 		r.logger.Error("config reload aborted: failed to stop current runtime",
 			zap.NamedError("stop_error", err),
 			zap.NamedError("restore_error", restoreErr),
@@ -119,7 +126,7 @@ func (r *Runtime) reloadFromDisk(ctx context.Context) {
 		candidateStopCtx, candidateStopCancel := context.WithTimeout(context.Background(), defaultStopTimeout)
 		candidateStopErr := candidate.Stop(candidateStopCtx)
 		candidateStopCancel()
-		restoreErr := previous.Start(ctx)
+		restoreErr := r.restoreGeneration(ctx, previous)
 		r.logger.Error("config reload failed; restored previous runtime",
 			zap.Error(err),
 			zap.NamedError("candidate_cleanup_error", candidateStopErr),
@@ -132,11 +139,29 @@ func (r *Runtime) reloadFromDisk(ctx context.Context) {
 	r.logger.Info("config reloaded", zap.String("path", r.cfgPath))
 }
 
+// A failed stop may already have cancelled the transport's workers. Starting that
+// object again can skip it as "started" while its MQTT connection stays online.
+func (r *Runtime) restoreGeneration(ctx context.Context, previous *runtimeGeneration) error {
+	cfg := previous.cfg
+	restored := r.newGeneration(cfg, r.buildTransports(cfg, r.logger))
+	r.current = restored
+	if err := restored.Start(ctx); err != nil {
+		failure := fmt.Errorf("restore previous runtime: %w", err)
+		select {
+		case r.failures <- failure:
+		default:
+		}
+		return failure
+	}
+	return nil
+}
+
 func (r *Runtime) newGeneration(cfg *config.Config, transports []coretransport.Transport) *runtimeGeneration {
 	bus := events.NewBus()
 	registry := NewEntityRegistry(bus)
 	router := NewCommandRouter()
 	return &runtimeGeneration{
+		cfg:        cfg,
 		plugins:    NewPluginManager(cfg, registry, router, bus, r.logger, r.factories),
 		transports: NewTransportManager(cfg, registry, router, bus, r.logger, transports),
 	}
